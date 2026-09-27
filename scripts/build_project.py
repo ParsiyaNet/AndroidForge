@@ -140,11 +140,21 @@ def main() -> int:
     successful_command: list[str] | None = None
 
     for cmd in all_commands:
-        # For gradlew commands, make sure it's executable
+        # For gradlew commands: ensure the file is executable AND invoke it
+        # via `sh` to bypass any remaining exec-bit issues (Python's
+        # zipfile extraction sometimes loses the +x bit even after chmod).
         if use_wrapper and cmd and cmd[0].endswith("gradlew"):
             gradlew_path = Path(cmd[0])
             if gradlew_path.exists():
-                gradlew_path.chmod(0o755)
+                try:
+                    gradlew_path.chmod(gradlew_path.stat().st_mode | 0o111)
+                except Exception:
+                    pass
+                # Replace ["/path/to/gradlew", "assembleDebug"] with
+                #                ["/bin/sh", "/path/to/gradlew", "assembleDebug"]
+                # This makes the build resilient to filesystems that
+                # silently drop the exec bit.
+                cmd = ["/bin/sh", str(gradlew_path)] + cmd[1:]
         rc, log = run(cmd, root, log_dir / f"build-{int(time.time())}-{len(cmd)}.log", build_env)
         last_rc = rc
         last_log = log

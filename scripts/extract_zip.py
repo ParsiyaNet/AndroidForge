@@ -35,6 +35,21 @@ def extract(zip_path: Path, dest_dir: Path) -> Path:
         if macosx.is_dir():
             shutil.rmtree(macosx, ignore_errors=True)
 
+    # Python's zipfile.extractall() does NOT preserve the Unix execute bit
+    # on shell scripts (e.g. `gradlew`). Without this, running `./gradlew`
+    # later fails with PermissionError. We restore the +x bit on every
+    # shell script and binary we can recognise by extension/name.
+    for p in dest_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        name = p.name
+        if name == "gradlew" or name == "gradlew.bat" or name.endswith(".sh") or name == "flutter" or name == "dart":
+            try:
+                cur = p.stat().st_mode
+                p.chmod(cur | 0o111)  # set +x for user/group/other
+            except Exception:
+                pass
+
     # If the archive contains exactly one top-level directory, return that.
     top = [p for p in dest_dir.iterdir() if not p.name.startswith(".")]
     if len(top) == 1 and top[0].is_dir():
