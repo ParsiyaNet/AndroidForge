@@ -503,6 +503,12 @@
       if (!c.owner || !c.repo || !c.pat) { toast("Detect your repo first (step 1)", "err"); return; }
       if (!currentFile) { toast("Pick a ZIP first", "err"); return; }
 
+      // GitHub Contents API has a 1 MB file size limit for direct uploads.
+      if (currentFile.size > 1024 * 1024) {
+        toast(`ZIP is ${formatBytes(currentFile.size)} — over the 1 MB Contents API limit. Please split or compress.`, "err", 8000);
+        return;
+      }
+
       els.btnBuild.disabled = true;
       els.cardProgress.style.display = "";
       els.cardResult.style.display = "none";
@@ -514,9 +520,9 @@
       els.progressBar.style.width = "5%";
       appendLog("▶ Starting build pipeline…");
 
-      // Track the release tag so we can fetch its assets later.
-      window._currentBuildTag = null;
+      // Track state for the polling / result phases.
       window._currentRunId = null;
+      window._currentCommitSha = null;
 
       try {
         // 1. Verify repo is reachable
@@ -524,49 +530,46 @@
         const repoInfo = await apiJson(`/repos/${c.owner}/${c.repo}`);
         appendLog(`  ✓ ${repoInfo.full_name} (default branch: ${repoInfo.default_branch})`);
 
-        // 2. Create a release to host the ZIP asset (and later the APK)
-        const tag = RELEASE_TAG_PREFIX + Date.now();
-        window._currentBuildTag = tag;
-        appendLog(`→ Creating release tag: ${tag}`);
-        const release = await apiJson(`/repos/${c.owner}/${c.repo}/releases`, {
-          method: "POST",
+        // 2. Read the ZIP file and convert to base64.
+        appendLog(`→ Reading ${currentFile.name} (${formatBytes(currentFile.size)})…`);
+        els.uploadStatus.textContent = "reading ZIP…";
+        const fileBuffer = await currentFile.arrayBuffer();
+        const base64Content = arrayBufferToBase64(fileBuffer);
+        appendLog(`  ✓ Read ${base64Content.length} chars of base64`);
+
+        // 3. Commit the ZIP to input/ via the GitHub Contents API.
+        //    This endpoint is on api.github.com (CORS-enabled), unlike
+        //    uploads.github.com (release asset uploads, no CORS).
+        const timestamp = Date.now();
+        const safeName = currentFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const commitPath = `input/web-build-${timestamp}-${safeName}`;
+        const commitMessage = `Web build upload: ${currentFile.name} [AndroidForge web UI]`;
+        appendLog(`→ Committing ${commitPath} to main branch…`);
+        els.uploadStatus.textContent = "committing ZIP to repo…";
+        const commitRes = await apiJson(`/repos/${c.owner}/${c.repo}/contents/${commitPath}`, {
+          method: "PUT",
           body: JSON.stringify({
-            tag_name: tag,
-            target_commitish: repoInfo.default_branch,
-            name: `Web build ${new Date().toISOString()}`,
-            body: `Auto-created by AndroidForge web UI for ${currentFile.name}`,
-            draft: false, prerelease: true,
+            message: commitMessage,
+            content: base64Content,
+            branch: repoInfo.default_branch,
           }),
           headers: { "Content-Type": "application/json" },
         });
-        appendLog(`  ✓ Release ${release.id} created`);
+        const commitSha = commitRes.commit.sha;
+        window._currentCommitSha = commitSha;
+        appendLog(`  ✓ Committed as ${commitSha.substring(0, 7)} (${commitPath})`);
 
-        // 3. Upload the ZIP as a release asset
-        appendLog(`→ Uploading ${currentFile.name} (${formatBytes(currentFile.size)})…`);
-        els.uploadStatus.textContent = "uploading ZIP…";
-        const uploadUrl = release.upload_url.replace(/\{.*\}/, "");
-        const assetRes = await fetch(`${uploadUrl}?name=${encodeURIComponent(currentFile.name)}`, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${c.pat}`,
-            "Accept": "application/vnd.github+json",
-            "Content-Type": "application/zip",
-          },
-          body: currentFile,
-        });
-        if (!assetRes.ok) {
-          const t = await assetRes.text();
-          throw new Error(`Asset upload failed: ${assetRes.status} ${t}`);
-        }
-        const asset = await assetRes.json();
-        appendLog(`  ✓ Asset ${asset.id} uploaded`);
-
-        // 4. Trigger workflow_dispatch
-        appendLog(`→ Triggering build workflow…`);
+        // 4. Trigger workflow_dispatch with zip_source=input-directory.
+        //    The push to input/**.zip will ALSO trigger the workflow via
+        //    the push event filter, but we want a single deterministic
+        //    run with the user's chosen variant. So we trigger dispatch
+        //    explicitly — the push run will be cancelled by the
+        //    concurrency group OR we just pick the dispatch run by id.
+        appendLog("→ Triggering build workflow…");
         const inputs = {
-          zip_source: "release-asset",
-          release_tag: tag,
+          zip_source: "input-directory",
           zip_url: "",
+          release_tag: "",
           build_variant: els.variant.value,
           enable_ndk: els.enableNdk.checked,
         };
@@ -581,12 +584,15 @@
         }
         appendLog("  ✓ Workflow dispatched");
 
-        // 5. Wait briefly, then find the most recent run
+        // 5. Wait briefly, then find the workflow_dispatch run.
         els.progressBar.style.width = "15%";
         appendLog("→ Waiting for workflow run to register…");
-        await sleep(5000);
-        const runs = await apiJson(`/repos/${c.owner}/${c.repo}/actions/runs?per_page=5`);
-        const run = (runs.workflow_runs || []).find(r => r.head_branch === repoInfo.default_branch);
+        await sleep(8000);
+        const runs = await apiJson(`/repos/${c.owner}/${c.repo}/actions/runs?per_page=5&event=workflow_dispatch`);
+        // Pick the most recent dispatch run on this branch.
+        const run = (runs.workflow_runs || []).find(r =>
+          r.head_branch === repoInfo.default_branch && r.event === "workflow_dispatch"
+        );
         if (!run) throw new Error("Could not find the dispatched workflow run");
         window._currentRunId = run.id;
         els.runId.textContent = run.id;
@@ -604,6 +610,18 @@
         toast(e.message, "err", 6000);
         els.btnBuild.disabled = false;
       }
+    }
+
+    /** Convert an ArrayBuffer to a base64 string (chunked to avoid stack overflow). */
+    function arrayBufferToBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      const CHUNK = 0x8000; // 32 KB chunks
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        const slice = bytes.subarray(i, i + CHUNK);
+        binary += String.fromCharCode.apply(null, slice);
+      }
+      return btoa(binary);
     }
 
     // ---------- Polling ----------
@@ -671,35 +689,53 @@
       const c = loadConn();
       els.cardResult.style.display = "";
 
-      if (conclusion === "success") {
-        setStatus(els.resultContent, "✅ Build succeeded. Fetching your APK from the release…", "ok");
-      } else {
-        setStatus(els.resultContent, `✗ Build finished with status: <strong>${conclusion}</strong>. Diagnostics are in the run logs below.`, "err");
-      }
-      const runUrl = `https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}`;
-      els.resultContent.innerHTML += `<p class="small" style="margin-top:8px;">Run on GitHub: <a href="${runUrl}" target="_blank" rel="noopener">${runUrl}</a></p>`;
-
-      // Always show run link as a fallback.
-      els.resultContent.innerHTML += `<p class="small" style="margin-top:8px;"><a href="${runUrl}" target="_blank" rel="noopener"><button class="secondary">Open run on GitHub &rarr;</button></a></p>`;
-
-      // For successful builds via release-asset source, list release assets
-      // and offer direct download links. These links are regular GitHub
-      // navigation URLs — the browser follows the 302 to S3 automatically
-      // and saves the file. No fetch, no CORS, no auth headers.
-      if (conclusion === "success" && window._currentBuildTag) {
-        try {
-          await presentReleaseAssets(c, window._currentBuildTag, runId);
-        } catch (e) {
-          appendLog(`[result error] ${e.message}`);
-          els.resultContent.innerHTML += `<div class="status warn">Could not list release assets: ${escapeHtml(e.message)}. Use the GitHub run link above.</div>`;
+      try {
+        if (conclusion === "success") {
+          setStatus(els.resultContent, "✅ Build succeeded. Fetching your APK from the output release…", "ok");
+        } else {
+          setStatus(els.resultContent, `✗ Build finished with status: <strong>${conclusion}</strong>. Diagnostics are in the run logs below.`, "err");
         }
+        const runUrl = `https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}`;
+        els.resultContent.innerHTML += `<p class="small" style="margin-top:8px;">Run on GitHub: <a href="${runUrl}" target="_blank" rel="noopener">${runUrl}</a></p>`;
+        els.resultContent.innerHTML += `<p class="small" style="margin-top:8px;"><a href="${runUrl}" target="_blank" rel="noopener"><button class="secondary">Open run on GitHub &rarr;</button></a></p>`;
+
+        // For successful builds, the workflow creates a release with tag
+        // `web-build-output-<run_id>` and uploads the APKs there. Fetch
+        // that release and offer direct download links. These URLs are
+        // regular GitHub navigation URLs — the browser follows the 302
+        // to S3 automatically and saves the file. No fetch, no CORS,
+        // no auth headers.
+        if (conclusion === "success" && runId) {
+          const tag = `web-build-output-${runId}`;
+          // The release might not exist immediately after the run completes
+          // (race between workflow completion event and the release-create
+          // step). Retry a few times before giving up.
+          const maxAttempts = 8;
+          const retryDelayMs = 3000;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              await presentReleaseAssets(c, tag, runId);
+              break; // success — stop retrying
+            } catch (e) {
+              if (attempt >= maxAttempts) {
+                appendLog(`[result error] ${e.message}`);
+                els.resultContent.innerHTML += `<div class="status warn">Could not list release assets (tried ${maxAttempts}× over ${maxAttempts * retryDelayMs / 1000}s): ${escapeHtml(e.message)}. Use the GitHub run link above to download the artifact ZIP manually.</div>`;
+                break;
+              }
+              appendLog(`  ⏳ Release not ready yet, retrying in ${retryDelayMs / 1000}s… (attempt ${attempt + 1}/${maxAttempts})`);
+              await sleep(retryDelayMs);
+            }
+          }
+        }
+      } finally {
+        els.btnBuild.disabled = false;
       }
-      els.btnBuild.disabled = false;
     }
 
     /**
-     * Fetch the release that hosts both the source ZIP and the built APKs.
-     * Render direct download buttons for every APK/AAB asset in that release.
+     * Fetch the release created by the workflow for this run, render direct
+     * download buttons for every APK/AAB asset. Returns 200 OK if release
+     * exists; throws on 404 (release not yet created).
      */
     async function presentReleaseAssets(c, tag, runId) {
       appendLog(`→ Listing release assets for tag ${tag}…`);
@@ -709,15 +745,7 @@
         a.name.toLowerCase().endsWith(".aab")
       );
       if (assets.length === 0) {
-        appendLog(`  ⚠ No APK/AAB assets in release ${tag} yet (workflow may still be uploading).`);
-        els.resultContent.innerHTML += `
-          <div class="status warn">
-            The workflow is still uploading APKs to the release. Wait ~30s and
-            <a href="javascript:location.reload()">reload</a>, or grab them from the run page:
-            <a href="https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}" target="_blank" rel="noopener">open run &rarr;</a>
-          </div>
-        `;
-        return;
+        throw new Error("Release has no APK/AAB assets yet");
       }
       appendLog(`  ✓ Found ${assets.length} APK/AAB asset(s): ${assets.map(a => a.name).join(", ")}`);
 
@@ -728,11 +756,6 @@
       const primary = releasePool[0] || pool[0];
 
       let html = `<h3 style="margin-top:20px;">📦 Your APK</h3>`;
-
-      // Primary CTA — anchor with download attribute so the browser saves
-      // the file directly. The browser_download_url is a GitHub navigation
-      // URL that works without any auth headers (for public repos) or
-      // with cookie auth (for private repos).
       html += `
         <div class="download-row" style="border-color: var(--accent); background: linear-gradient(135deg, rgba(255,122,0,0.08) 0%, rgba(255,180,84,0.04) 100%);">
           <div class="info">
@@ -760,23 +783,6 @@
         }
       }
 
-      // Also show the original source ZIP for reference
-      const sourceZip = (release.assets || []).find(a => a.name.toLowerCase().endsWith(".zip"));
-      if (sourceZip) {
-        html += `<details style="margin-top:14px;"><summary>Source ZIP (what you uploaded)</summary>`;
-        html += `
-          <div class="download-row">
-            <div class="info">
-              <div class="name">${escapeHtml(sourceZip.name)}</div>
-              <div class="meta">${formatBytes(sourceZip.size)} · source ZIP</div>
-            </div>
-            <a href="${sourceZip.browser_download_url}" download="${escapeAttr(sourceZip.name)}"><button class="secondary">⬇ Download</button></a>
-          </div>
-        `;
-        html += `</details>`;
-      }
-
-      // View release on GitHub link
       html += `
         <p class="small" style="margin-top:16px;">
           Prefer the GitHub UI? <a href="${release.html_url}" target="_blank" rel="noopener">Open this release on GitHub &rarr;</a>
