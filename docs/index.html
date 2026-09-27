@@ -47,6 +47,13 @@
     .card h2 {
       margin: 0 0 16px; font-size: 18px; font-weight: 600; color: var(--text);
       border-bottom: 1px solid var(--border); padding-bottom: 12px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .card h2 .step-num {
+      background: var(--accent); color: #1c0a00;
+      width: 26px; height: 26px; border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 800; flex-shrink: 0;
     }
     label { display: block; font-size: 13px; color: var(--text-dim); margin-bottom: 6px; font-weight: 500; }
     input[type="text"], input[type="password"], select, .file-drop {
@@ -76,7 +83,7 @@
     button:disabled { opacity: .5; cursor: not-allowed; }
     button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border-strong); }
     button.secondary:hover:not(:disabled) { background: var(--border); }
-    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     .status {
       padding: 12px 16px; border-radius: 6px; margin: 12px 0; font-size: 14px;
       border-left: 4px solid; background: var(--panel-2);
@@ -123,18 +130,16 @@
     .download-row .info { flex: 1; min-width: 0; }
     .download-row .name { color: var(--text); font-weight: 600; font-size: 14px; word-break: break-all; }
     .download-row .meta { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
-    .download-row button { flex-shrink: 0; }
-    button.big { padding: 14px 24px; font-size: 15px; }
+    .download-row button, .download-row a > button { flex-shrink: 0; }
     .primary-cta {
       background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
       color: #1c0a00; border: none; border-radius: 8px;
       padding: 16px 32px; font-size: 16px; font-weight: 800;
       cursor: pointer; transition: transform .1s, box-shadow .15s;
       box-shadow: 0 4px 16px rgba(255, 122, 0, .25);
+      text-decoration: none; display: inline-block;
     }
     .primary-cta:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 24px rgba(255, 122, 0, .35); }
-    .primary-cta:disabled { opacity: .5; cursor: wait; }
-    .preparing { display: flex; align-items: center; gap: 10px; color: var(--text-dim); font-size: 13px; padding: 12px 0; }
     a { color: var(--accent); text-decoration: none; }
     a:hover { color: var(--accent-2); text-decoration: underline; }
     footer {
@@ -161,6 +166,12 @@
       border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .conn-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 4px; font-size: 12px;
+      background: #1a4d2e; color: var(--ok); border: 1px solid #2a5d3e;
+    }
+    .conn-badge.warn { background: #4a3a0e; color: var(--warn); border-color: #5a4a1e; }
   </style>
 </head>
 <body>
@@ -171,18 +182,10 @@
 
   <main>
     <!-- ============================================ -->
-    <!-- Step 1: Connect                              -->
+    <!-- Step 1: Connect with PAT only                -->
     <!-- ============================================ -->
     <section class="card" id="card-connect">
-      <h2>1 · Connect to your fork</h2>
-      <div class="row">
-        <label for="owner">GitHub owner (user or org)</label>
-        <input type="text" id="owner" placeholder="e.g. Professional-X" autocomplete="username" />
-      </div>
-      <div class="row">
-        <label for="repo">Repository name</label>
-        <input type="text" id="repo" placeholder="e.g. AndroidForge" autocomplete="off" />
-      </div>
+      <h2><span class="step-num">1</span> Connect with your GitHub token</h2>
       <div class="row">
         <label for="pat">
           GitHub Personal Access Token
@@ -195,17 +198,17 @@
         </div>
       </div>
       <div class="btn-row">
-        <button id="btn-save">Save connection</button>
-        <button class="secondary" id="btn-clear">Clear saved data</button>
-        <span id="conn-status" class="small"></span>
+        <button id="btn-save">Detect &amp; save</button>
+        <button class="secondary" id="btn-clear">Clear</button>
+        <span id="conn-status"></span>
       </div>
     </section>
 
     <!-- ============================================ -->
     <!-- Step 2: Upload                                -->
     <!-- ============================================ -->
-    <section class="card" id="card-upload">
-      <h2>2 · Upload source ZIP</h2>
+    <section class="card" id="card-upload" style="display:none;">
+      <h2><span class="step-num">2</span> Upload source ZIP</h2>
       <div class="row">
         <label for="file-input" class="file-drop" id="file-drop">
           <span id="file-label">📁 Drop or click to choose a .zip file</span>
@@ -238,7 +241,7 @@
     <!-- Step 3: Build progress                        -->
     <!-- ============================================ -->
     <section class="card" id="card-progress" style="display:none;">
-      <h2>3 · Build progress</h2>
+      <h2><span class="step-num">3</span> Build progress</h2>
       <div class="grid-3">
         <div class="stat">
           <div class="label">Status</div>
@@ -269,7 +272,7 @@
     <!-- Step 4: Result                                -->
     <!-- ============================================ -->
     <section class="card" id="card-result" style="display:none;">
-      <h2>4 · Download</h2>
+      <h2><span class="step-num">4</span> Download</h2>
       <div id="result-content"></div>
     </section>
   </main>
@@ -281,12 +284,6 @@
 
   <div id="toast-container"></div>
 
-  <!-- JSZip (tiny, well-known library) for extracting APKs from artifact ZIPs in-browser.
-       Loaded over HTTPS from cdnjs. SRI hash omitted to avoid hash-mismatch breakage;
-       the connection itself is TLS-protected. -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"
-          crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-
   <script>
     // ====================================================================
     // AndroidForge — Pages-side controller
@@ -294,18 +291,26 @@
     // All GitHub API calls go DIRECTLY from the browser to
     // api.github.com. No token ever leaves the browser except to
     // api.github.com over HTTPS.
+    //
+    // IMPORTANT: APK download uses RELEASE ASSETS, not Actions artifacts.
+    // The workflow uploads the built APKs to the same release that hosts
+    // the source ZIP. Then the UI offers direct links to
+    //   https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
+    // which the browser downloads as a regular navigation (no fetch, no
+    // CORS, no Authorization header dance).
     // ====================================================================
 
     const API = "https://api.github.com";
-    const REPO_KEY = "androidforge.conn.v1";
+    const STORAGE_KEY = "androidforge.conn.v2";
     const WORKFLOW_FILE = "build-android.yml";
     const RELEASE_TAG_PREFIX = "web-build-";
 
     // ---------- DOM ----------
     const $ = (id) => document.getElementById(id);
     const els = {
-      owner: $("owner"), repo: $("repo"), pat: $("pat"),
+      pat: $("pat"),
       btnSave: $("btn-save"), btnClear: $("btn-clear"), connStatus: $("conn-status"),
+      cardUpload: $("card-upload"),
       fileDrop: $("file-drop"), fileInput: $("file-input"), fileLabel: $("file-label"),
       variant: $("variant"), enableNdk: $("enable-ndk"),
       btnBuild: $("btn-build"), uploadStatus: $("upload-status"),
@@ -318,36 +323,102 @@
 
     // ---------- Persistence ----------
     function loadConn() {
-      try { return JSON.parse(localStorage.getItem(REPO_KEY) || "{}"); }
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
       catch { return {}; }
     }
-    function saveConn(c) { localStorage.setItem(REPO_KEY, JSON.stringify(c)); }
-    function clearConn() { localStorage.removeItem(REPO_KEY); }
+    function saveConn(c) { localStorage.setItem(STORAGE_KEY, JSON.stringify(c)); }
+    function clearConn() { localStorage.removeItem(STORAGE_KEY); }
 
     function restoreConn() {
       const c = loadConn();
-      els.owner.value = c.owner || "";
-      els.repo.value = c.repo || "";
       els.pat.value = c.pat || "";
       updateConnStatus();
+      if (c.pat && c.owner && c.repo) {
+        // Already connected — show the upload card.
+        els.cardUpload.style.display = "";
+        updateBuildBtn();
+      }
     }
     function updateConnStatus() {
       const c = loadConn();
       if (c.owner && c.repo && c.pat) {
-        els.connStatus.textContent = `✓ saved: ${c.owner}/${c.repo}`;
+        els.connStatus.innerHTML = `<span class="conn-badge">✓ ${escapeHtml(c.owner)}/${escapeHtml(c.repo)}</span>`;
+      } else if (c.pat && (!c.owner || !c.repo)) {
+        els.connStatus.innerHTML = `<span class="conn-badge warn">PAT saved, repo not detected</span>`;
       } else {
         els.connStatus.textContent = "";
       }
     }
 
-    els.btnSave.addEventListener("click", () => {
-      saveConn({ owner: els.owner.value.trim(), repo: els.repo.value.trim(), pat: els.pat.value.trim() });
-      updateConnStatus();
-      toast("Saved", "ok");
+    // ---------- Detect repo from PAT ----------
+    // 1. GET /user → returns { login: "username" }
+    // 2. Try GET /repos/<login>/AndroidForge
+    // 3. If not found, scan repos for one with build-android.yml workflow
+    async function detectRepo(pat) {
+      const headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": `Bearer ${pat}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      };
+      // 1. Get the user
+      const userRes = await fetch(`${API}/user`, { headers });
+      if (!userRes.ok) {
+        const t = await userRes.text();
+        throw new Error(`Cannot read user (HTTP ${userRes.status}): ${t.slice(0,200)}`);
+      }
+      const user = await userRes.json();
+      const owner = user.login;
+      // 2. Try the default name
+      const repoRes = await fetch(`${API}/repos/${owner}/AndroidForge`, { headers });
+      if (repoRes.ok) {
+        return { owner, repo: "AndroidForge" };
+      }
+      // 3. Scan user's repos for any that contains the workflow file
+      // List repos (max 100)
+      const listRes = await fetch(`${API}/user/repos?per_page=100&sort=updated`, { headers });
+      if (!listRes.ok) {
+        // Classic PAT without `repo` scope — likely will not work for uploads either.
+        throw new Error(`Cannot list your repos (HTTP ${listRes.status}). Make sure your PAT has the 'repo' scope.`);
+      }
+      const repos = await listRes.json();
+      // Filter to repos that have the workflow file
+      for (const r of repos) {
+        const checkRes = await fetch(`${API}/repos/${r.full_name}/contents/.github/workflows/${WORKFLOW_FILE}`, { headers });
+        if (checkRes.ok) {
+          return { owner: r.owner.login, repo: r.name };
+        }
+      }
+      throw new Error(`Could not find a repository with the AndroidForge workflow file. Please fork https://github.com/Professional-X/AndroidForge first.`);
+    }
+
+    els.btnSave.addEventListener("click", async () => {
+      const pat = els.pat.value.trim();
+      if (!pat) { toast("Enter your PAT first", "err"); return; }
+      els.btnSave.disabled = true;
+      els.connStatus.innerHTML = `<span class="conn-badge warn"><span class="spinner"></span> Detecting repo…</span>`;
+      try {
+        const { owner, repo } = await detectRepo(pat);
+        saveConn({ owner, repo, pat });
+        updateConnStatus();
+        els.cardUpload.style.display = "";
+        updateBuildBtn();
+        toast(`Connected to ${owner}/${repo}`, "ok");
+      } catch (e) {
+        toast(e.message, "err", 8000);
+        els.connStatus.innerHTML = `<span class="conn-badge warn">⚠ ${escapeHtml(e.message)}</span>`;
+      } finally {
+        els.btnSave.disabled = false;
+      }
     });
     els.btnClear.addEventListener("click", () => {
       clearConn();
-      els.owner.value = ""; els.repo.value = ""; els.pat.value = "";
+      els.pat.value = "";
+      els.cardUpload.style.display = "none";
+      els.cardProgress.style.display = "none";
+      els.cardResult.style.display = "none";
+      currentFile = null;
+      els.fileLabel.textContent = "📁 Drop or click to choose a .zip file";
+      els.fileDrop.classList.remove("has-file");
       updateConnStatus();
       toast("Cleared", "warn");
     });
@@ -383,9 +454,6 @@
       const c = loadConn();
       els.btnBuild.disabled = !(currentFile && c.owner && c.repo && c.pat);
     }
-    els.owner.addEventListener("input", updateBuildBtn);
-    els.repo.addEventListener("input", updateBuildBtn);
-    els.pat.addEventListener("input", updateBuildBtn);
 
     // ---------- Toast / status ----------
     function toast(msg, kind = "info", ttl = 4000) {
@@ -396,7 +464,7 @@
       setTimeout(() => el.remove(), ttl);
     }
     function setStatus(el, msg, kind = "info") {
-      el.innerHTML = `<div class="status ${kind}">${escapeHtml(msg)}</div>`;
+      el.innerHTML = `<div class="status ${kind}">${msg}</div>`;
     }
 
     // ---------- API helpers ----------
@@ -409,8 +477,7 @@
         "X-GitHub-Api-Version": "2022-11-28",
         ...(opts.headers || {}),
       };
-      const res = await fetch(API + path, { ...opts, headers });
-      return res;
+      return fetch(API + path, { ...opts, headers });
     }
     async function apiJson(path, opts = {}) {
       const res = await api(path, opts);
@@ -433,7 +500,7 @@
 
     async function buildApk() {
       const c = loadConn();
-      if (!c.owner || !c.repo || !c.pat) { toast("Fill owner/repo/PAT first", "err"); return; }
+      if (!c.owner || !c.repo || !c.pat) { toast("Detect your repo first (step 1)", "err"); return; }
       if (!currentFile) { toast("Pick a ZIP first", "err"); return; }
 
       els.btnBuild.disabled = true;
@@ -447,14 +514,19 @@
       els.progressBar.style.width = "5%";
       appendLog("▶ Starting build pipeline…");
 
+      // Track the release tag so we can fetch its assets later.
+      window._currentBuildTag = null;
+      window._currentRunId = null;
+
       try {
         // 1. Verify repo is reachable
         appendLog("→ Verifying repository access…");
         const repoInfo = await apiJson(`/repos/${c.owner}/${c.repo}`);
         appendLog(`  ✓ ${repoInfo.full_name} (default branch: ${repoInfo.default_branch})`);
 
-        // 2. Create a release to host the ZIP asset
+        // 2. Create a release to host the ZIP asset (and later the APK)
         const tag = RELEASE_TAG_PREFIX + Date.now();
+        window._currentBuildTag = tag;
         appendLog(`→ Creating release tag: ${tag}`);
         const release = await apiJson(`/repos/${c.owner}/${c.repo}/releases`, {
           method: "POST",
@@ -505,7 +577,6 @@
             headers: { "Content-Type": "application/json" },
           });
         } catch (e) {
-          // HTTP 204 expected, fetch sees it as ok
           if (e.status && e.status >= 400) throw e;
         }
         appendLog("  ✓ Workflow dispatched");
@@ -517,6 +588,7 @@
         const runs = await apiJson(`/repos/${c.owner}/${c.repo}/actions/runs?per_page=5`);
         const run = (runs.workflow_runs || []).find(r => r.head_branch === repoInfo.default_branch);
         if (!run) throw new Error("Could not find the dispatched workflow run");
+        window._currentRunId = run.id;
         els.runId.textContent = run.id;
         els.runLink.href = run.html_url;
         appendLog(`  ✓ Run ${run.id} queued: ${run.html_url}`);
@@ -526,7 +598,7 @@
         startPolling(run.id);
       } catch (e) {
         appendLog(`✗ ERROR: ${e.message}`);
-        setStatus(els.uploadStatus, `✗ ${e.message}`, "err");
+        setStatus(els.uploadStatus, `✗ ${escapeHtml(e.message)}`, "err");
         els.runStatus.innerHTML = '<span class="badge failure">failed</span>';
         els.progressBar.style.width = "0%";
         toast(e.message, "err", 6000);
@@ -543,7 +615,7 @@
       pollStart = Date.now();
       lastStepCount = 0;
       pollTimer = setInterval(() => pollRun(runId), 8000);
-      pollRun(runId); // immediate first poll
+      pollRun(runId);
     }
     function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
@@ -554,7 +626,6 @@
         const elapsed = pollStart ? Math.floor((Date.now() - pollStart) / 1000) : 0;
         els.runElapsed.textContent = formatDuration(elapsed);
 
-        // Status badge
         const status = run.status;
         const conclusion = run.conclusion;
         let badge;
@@ -566,14 +637,11 @@
         else badge = `<span class="badge queued">${escapeHtml(conclusion || status || "—")}</span>`;
         els.runStatus.innerHTML = badge;
 
-        // Progress bar (heuristic)
         let pct = 20;
         if (status === "in_progress") pct = 50;
-        if (conclusion === "success") pct = 100;
-        else if (conclusion === "failure" || conclusion === "cancelled") pct = 100;
+        if (conclusion === "success" || conclusion === "failure" || conclusion === "cancelled") pct = 100;
         els.progressBar.style.width = pct + "%";
 
-        // Step list
         const jobs = await apiJson(`/repos/${c.owner}/${c.repo}/actions/runs/${runId}/jobs`);
         const steps = (jobs.jobs && jobs.jobs[0] && jobs.jobs[0].steps) || [];
         if (steps.length !== lastStepCount) {
@@ -587,8 +655,6 @@
           }).join("");
           lastStepCount = steps.length;
         }
-
-        // Live log: append the run's updated_at as a heartbeat
         appendLog(`[poll ${new Date().toLocaleTimeString()}] status=${status} conclusion=${conclusion || "—"}`);
 
         if (status === "completed") {
@@ -600,206 +666,125 @@
       }
     }
 
+    // ---------- Result: direct release-asset download ----------
     async function showResult(runId, conclusion) {
       const c = loadConn();
       els.cardResult.style.display = "";
 
-      // Header banner
       if (conclusion === "success") {
-        setStatus(els.resultContent, "✅ Build succeeded. Preparing your APK for direct download…", "ok");
+        setStatus(els.resultContent, "✅ Build succeeded. Fetching your APK from the release…", "ok");
       } else {
-        setStatus(els.resultContent, `✗ Build finished with status: <strong>${conclusion}</strong>. Diagnostics are available in the run logs below.`, "err");
+        setStatus(els.resultContent, `✗ Build finished with status: <strong>${conclusion}</strong>. Diagnostics are in the run logs below.`, "err");
       }
-
       const runUrl = `https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}`;
       els.resultContent.innerHTML += `<p class="small" style="margin-top:8px;">Run on GitHub: <a href="${runUrl}" target="_blank" rel="noopener">${runUrl}</a></p>`;
 
-      // Try to fetch artifacts and extract APKs directly in the browser.
-      if (conclusion === "success") {
+      // Always show run link as a fallback.
+      els.resultContent.innerHTML += `<p class="small" style="margin-top:8px;"><a href="${runUrl}" target="_blank" rel="noopener"><button class="secondary">Open run on GitHub &rarr;</button></a></p>`;
+
+      // For successful builds via release-asset source, list release assets
+      // and offer direct download links. These links are regular GitHub
+      // navigation URLs — the browser follows the 302 to S3 automatically
+      // and saves the file. No fetch, no CORS, no auth headers.
+      if (conclusion === "success" && window._currentBuildTag) {
         try {
-          await fetchAndPresentArtifacts(c, runId);
+          await presentReleaseAssets(c, window._currentBuildTag, runId);
         } catch (e) {
           appendLog(`[result error] ${e.message}`);
-          els.resultContent.innerHTML += `<div class="status warn">Could not auto-prepare APK downloads: ${escapeHtml(e.message)}. Use the GitHub UI link above to download the artifact ZIP manually.</div>`;
+          els.resultContent.innerHTML += `<div class="status warn">Could not list release assets: ${escapeHtml(e.message)}. Use the GitHub run link above.</div>`;
         }
       }
       els.btnBuild.disabled = false;
     }
 
     /**
-     * Fetch every artifact produced by the run, walk each artifact ZIP in
-     * the browser (via JSZip), pull out any .apk / .aab files, and present
-     * each as a direct download button (blob: URL). Also keep a fallback
-     * "Download full artifact ZIP" link for each artifact in case the
-     * in-browser extraction fails.
+     * Fetch the release that hosts both the source ZIP and the built APKs.
+     * Render direct download buttons for every APK/AAB asset in that release.
      */
-    async function fetchAndPresentArtifacts(c, runId) {
-      const arts = await apiJson(`/repos/${c.owner}/${c.repo}/actions/runs/${runId}/artifacts`);
-      const artifacts = arts.artifacts || [];
-      if (artifacts.length === 0) {
-        els.resultContent.innerHTML += `<p class="small" style="margin-top:12px;">No artifacts produced.</p>`;
-        return;
-      }
-      appendLog(`→ Found ${artifacts.length} artifact(s): ${artifacts.map(a => a.name).join(", ")}`);
-
-      // Render a container
-      const holderId = "apk-downloads";
-      els.resultContent.innerHTML += `
-        <h3 style="margin-top:20px;">📦 Your APK</h3>
-        <div id="${holderId}">
-          <div class="preparing"><span class="spinner"></span> Fetching artifact ZIP(s) and extracting APK(s)…</div>
-        </div>
-      `;
-      const holder = document.getElementById(holderId);
-
-      // Track all APKs we extract across all artifacts so we can show a primary CTA.
-      let allApks = [];
-      const perArtifactRows = [];
-
-      for (const a of artifacts) {
-        // Skip the logs artifact (we only care about APKs/AABs)
-        if (a.name.includes("logs")) continue;
-        try {
-          appendLog(`→ Fetching ${a.name} (${formatBytes(a.size_in_bytes)})…`);
-          // The GitHub-provided archive_download_url is on api.github.com.
-          // Browsers will follow the 302 to a presigned S3 URL automatically.
-          const res = await fetch(a.archive_download_url, {
-            method: "GET",
-            headers: {
-              "Authorization": `Bearer ${c.pat}`,
-              "Accept": "application/vnd.github+json",
-            },
-            redirect: "follow",
-          });
-          if (!res.ok) {
-            const txt = await res.text();
-            appendLog(`  ✗ HTTP ${res.status} fetching ${a.name}: ${txt.slice(0,200)}`);
-            perArtifactRows.push(renderErrorRow(a.name, `HTTP ${res.status}: ${txt.slice(0,200)}`));
-            continue;
-          }
-          const zipBlob = await res.blob();
-          appendLog(`  ✓ Downloaded ${formatBytes(zipBlob.size)} ZIP, extracting APKs…`);
-          // Extract with JSZip
-          if (typeof JSZip === "undefined") {
-            throw new Error("JSZip library failed to load (check your network/ad-blocker)");
-          }
-          const zip = await JSZip.loadAsync(zipBlob);
-          const apkEntries = [];
-          zip.forEach((path, entry) => {
-            if (!entry.dir && (path.toLowerCase().endsWith(".apk") || path.toLowerCase().endsWith(".aab"))) {
-              apkEntries.push({ path, entry });
-            }
-          });
-          if (apkEntries.length === 0) {
-            appendLog(`  ⚠ No .apk/.aab files inside ${a.name}`);
-            perArtifactRows.push(renderErrorRow(a.name, "No APK files inside this artifact ZIP"));
-            continue;
-          }
-          appendLog(`  ✓ Found ${apkEntries.length} APK(s) inside ${a.name}`);
-          // Build blob URL for each APK
-          for (const { path, entry } of apkEntries) {
-            const buf = await entry.async("blob");
-            const url = URL.createObjectURL(buf);
-            const fileName = path.split("/").pop();
-            const isApk = fileName.toLowerCase().endsWith(".apk");
-            allApks.push({
-              artifactName: a.name,
-              fileName,
-              path,
-              size: buf.size,
-              url,
-              isApk,
-            });
-          }
-        } catch (e) {
-          appendLog(`  ✗ ${a.name}: ${e.message}`);
-          perArtifactRows.push(renderErrorRow(a.name, e.message));
-        }
-      }
-
-      // Render: primary CTA + per-APK rows
-      if (allApks.length === 0) {
-        holder.innerHTML = `
-          <div class="status warn">No APK files were found inside the produced artifacts.</div>
-          <p class="small" style="margin-top:8px;">You can still download the artifact ZIPs directly from the GitHub Actions run page:</p>
-          <p style="margin-top:6px;"><a href="https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}" target="_blank" rel="noopener"><button class="secondary">Open run on GitHub &rarr;</button></a></p>
+    async function presentReleaseAssets(c, tag, runId) {
+      appendLog(`→ Listing release assets for tag ${tag}…`);
+      const release = await apiJson(`/repos/${c.owner}/${c.repo}/releases/tags/${tag}`);
+      const assets = (release.assets || []).filter(a =>
+        a.name.toLowerCase().endsWith(".apk") ||
+        a.name.toLowerCase().endsWith(".aab")
+      );
+      if (assets.length === 0) {
+        appendLog(`  ⚠ No APK/AAB assets in release ${tag} yet (workflow may still be uploading).`);
+        els.resultContent.innerHTML += `
+          <div class="status warn">
+            The workflow is still uploading APKs to the release. Wait ~30s and
+            <a href="javascript:location.reload()">reload</a>, or grab them from the run page:
+            <a href="https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}" target="_blank" rel="noopener">open run &rarr;</a>
+          </div>
         `;
         return;
       }
+      appendLog(`  ✓ Found ${assets.length} APK/AAB asset(s): ${assets.map(a => a.name).join(", ")}`);
 
-      // Pick the primary APK: prefer .apk over .aab, then release > debug.
-      const apkOnly = allApks.filter(a => a.isApk);
-      const pool = apkOnly.length ? apkOnly : allApks;
-      const releasePool = pool.filter(a => /release/i.test(a.fileName));
-      const primary = (releasePool[0] || pool[0]);
+      // Pick primary: .apk > .aab, release > debug
+      const apkOnly = assets.filter(a => a.name.toLowerCase().endsWith(".apk"));
+      const pool = apkOnly.length ? apkOnly : assets;
+      const releasePool = pool.filter(a => /release/i.test(a.name));
+      const primary = releasePool[0] || pool[0];
 
-      let html = `
+      let html = `<h3 style="margin-top:20px;">📦 Your APK</h3>`;
+
+      // Primary CTA — anchor with download attribute so the browser saves
+      // the file directly. The browser_download_url is a GitHub navigation
+      // URL that works without any auth headers (for public repos) or
+      // with cookie auth (for private repos).
+      html += `
         <div class="download-row" style="border-color: var(--accent); background: linear-gradient(135deg, rgba(255,122,0,0.08) 0%, rgba(255,180,84,0.04) 100%);">
           <div class="info">
-            <div class="name">⭐ ${escapeHtml(primary.fileName)}</div>
-            <div class="meta">${formatBytes(primary.size)} · primary APK · from artifact <code>${escapeHtml(primary.artifactName)}</code></div>
+            <div class="name">⭐ ${escapeHtml(primary.name)}</div>
+            <div class="meta">${formatBytes(primary.size)} · primary APK</div>
           </div>
-          <button class="primary-cta" onclick="triggerDownload('${primary.url}', '${escapeAttr(primary.fileName)}')">⬇ Download APK</button>
+          <a href="${primary.browser_download_url}" download="${escapeAttr(primary.name)}"><button class="primary-cta">⬇ Download APK</button></a>
         </div>
       `;
 
-      if (allApks.length > 1) {
-        html += `<div class="small" style="margin-top:14px; margin-bottom:6px;">All produced files (${allApks.length}):</div>`;
-        for (const apk of allApks) {
-          if (apk === primary) continue;
+      if (assets.length > 1) {
+        html += `<div class="small" style="margin-top:14px; margin-bottom:6px;">All produced files (${assets.length}):</div>`;
+        for (const a of assets) {
+          if (a === primary) continue;
+          const kind = a.name.toLowerCase().endsWith(".apk") ? "APK" : "AAB";
           html += `
             <div class="download-row">
               <div class="info">
-                <div class="name">${escapeHtml(apk.fileName)}</div>
-                <div class="meta">${formatBytes(apk.size)} · ${apk.isApk ? "APK" : "AAB"} · from <code>${escapeHtml(apk.artifactName)}</code></div>
+                <div class="name">${escapeHtml(a.name)}</div>
+                <div class="meta">${formatBytes(a.size)} · ${kind}</div>
               </div>
-              <button class="secondary" onclick="triggerDownload('${apk.url}', '${escapeAttr(apk.fileName)}')">⬇ Download</button>
+              <a href="${a.browser_download_url}" download="${escapeAttr(a.name)}"><button class="secondary">⬇ Download</button></a>
             </div>
           `;
         }
       }
 
-      // Errors per artifact, if any
-      if (perArtifactRows.length) {
-        html += `<details style="margin-top:14px;"><summary>Problems fetching some artifacts (${perArtifactRows.length})</summary>`;
-        html += perArtifactRows.join("");
+      // Also show the original source ZIP for reference
+      const sourceZip = (release.assets || []).find(a => a.name.toLowerCase().endsWith(".zip"));
+      if (sourceZip) {
+        html += `<details style="margin-top:14px;"><summary>Source ZIP (what you uploaded)</summary>`;
+        html += `
+          <div class="download-row">
+            <div class="info">
+              <div class="name">${escapeHtml(sourceZip.name)}</div>
+              <div class="meta">${formatBytes(sourceZip.size)} · source ZIP</div>
+            </div>
+            <a href="${sourceZip.browser_download_url}" download="${escapeAttr(sourceZip.name)}"><button class="secondary">⬇ Download</button></a>
+          </div>
+        `;
         html += `</details>`;
       }
 
-      // Fallback: GitHub UI
+      // View release on GitHub link
       html += `
         <p class="small" style="margin-top:16px;">
-          Prefer the GitHub UI? <a href="https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}" target="_blank" rel="noopener">Open this run on GitHub &rarr;</a>
+          Prefer the GitHub UI? <a href="${release.html_url}" target="_blank" rel="noopener">Open this release on GitHub &rarr;</a>
         </p>
       `;
 
-      holder.innerHTML = html;
+      els.resultContent.innerHTML += html;
     }
-
-    function renderErrorRow(artifactName, errMsg) {
-      return `
-        <div class="download-row">
-          <div class="info">
-            <div class="name">${escapeHtml(artifactName)}</div>
-            <div class="meta" style="color: var(--err);">⚠ ${escapeHtml(errMsg)}</div>
-          </div>
-          <a href="https://github.com/${loadConn().owner}/${loadConn().repo}/actions" target="_blank" rel="noopener"><button class="secondary">Open on GitHub</button></a>
-        </div>
-      `;
-    }
-
-    /** Programmatically trigger a download from a blob URL. */
-    function triggerDownload(url, fileName) {
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName || "download.bin";
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { document.body.removeChild(a); }, 100);
-      toast(`Downloading ${fileName}…`, "ok");
-    }
-    // Expose for inline onclick handlers.
-    window.triggerDownload = triggerDownload;
 
     // ---------- Utilities ----------
     function appendLog(line) {
@@ -811,14 +796,9 @@
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     }
-    /** Escape a string for use inside a single-quoted JS string literal. */
     function escapeAttr(s) {
       return String(s == null ? "" : s)
-        .replace(/\\/g, "\\\\")
-        .replace(/'/g, "\\'")
-        .replace(/"/g, '\\"')
-        .replace(/\n/g, "\\n")
-        .replace(/\r/g, "\\r");
+        .replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     }
     function formatBytes(n) {
       if (!n) return "0 B";
@@ -835,7 +815,6 @@
 
     // ---------- Init ----------
     restoreConn();
-    updateBuildBtn();
   </script>
 </body>
 </html>
