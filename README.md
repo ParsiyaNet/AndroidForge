@@ -4,6 +4,39 @@
 
 AndroidForge is a GitHub-native system that automatically builds an Android APK from an uploaded Android source-code ZIP. It performs real project detection (Gradle, Flutter, multi-module, native C/C++, Kotlin vs Java), chooses a compatible toolchain (JDK / Gradle / AGP / NDK / Flutter versions) on the fly, runs the build, picks the relevant APK, and exposes it as a downloadable GitHub Actions artifact.
 
+## 🌐 Use the web UI (recommended)
+
+A drag-and-drop web interface is hosted on GitHub Pages:
+
+➡️ **https://professional-x.github.io/AndroidForge/**
+
+You will need a GitHub Personal Access Token (classic PAT with `repo` + `workflow` scopes, or a fine-grained PAT with `Contents: Read/Write`, `Actions: Read/Write`, `Releases: Read/Write`). The token is stored only in your browser's `localStorage` and sent directly to `api.github.com` — it never touches any other server.
+
+### Web UI flow
+
+1. Open the URL above.
+2. Enter your fork's owner / repo name / PAT.
+3. Click **Save connection**.
+4. Drag your `.zip` into the upload card (or click to pick).
+5. Choose a build variant (auto / debug / release / bundle).
+6. Click **⚒️ Build APK**.
+7. Watch live status, step progress, and elapsed time.
+8. When the build finishes, click the run link to download your APK from the GitHub Actions UI.
+
+### How the web UI works under the hood
+
+- Creates a GitHub Release on tag `web-build-<timestamp>` on your fork.
+- Uploads your `.zip` as a release asset via the GitHub REST API.
+- Triggers `workflow_dispatch` on `.github/workflows/build-android.yml` with `zip_source=release-asset` and `release_tag=<tag>`.
+- Polls the run status every 8 s and renders a step-by-step progress UI.
+- When the run completes, lists the produced artifacts with download links.
+
+---
+
+## CLI / direct workflow use
+
+If you prefer not to use the web UI, you can also trigger the build directly from GitHub:
+
 ```
 Android Project ZIP
         │
