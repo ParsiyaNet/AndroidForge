@@ -84,6 +84,7 @@ def main() -> int:
     parser.add_argument("--toolchain", required=True, help="Toolchain JSON (string or path)")
     parser.add_argument("--variant", default="auto", choices=["auto", "debug", "release", "bundle"])
     parser.add_argument("--log-dir", default=None, help="Directory to write logs")
+    parser.add_argument("--output", default=None, help="Write JSON summary to this file")
     args = parser.parse_args()
 
     def load(s: str) -> Any:
@@ -162,7 +163,11 @@ def main() -> int:
         "log_file": last_log,
         "build_commands_attempted": all_commands,
     }
-    print(json.dumps(result, indent=2))
+    output = json.dumps(result, indent=2)
+    if args.output:
+        Path(args.output).write_text(output)
+    else:
+        print(output)
 
     gh_output = os.environ.get("GITHUB_OUTPUT")
     if gh_output:

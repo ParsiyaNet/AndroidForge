@@ -57,11 +57,9 @@ on:
       - "input/**.zip"
 
 # Never expose secrets to the (untrusted) uploaded source ZIP.
-# We intentionally DO NOT pass any repo secrets into the build steps.
 permissions:
   contents: read
   actions: write
-  # No secrets, no id-token — keep the build sandboxed.
 
 concurrency:
   group: androidforge-build-${{ github.ref }}-${{ github.event.inputs.zip_source || 'auto' }}
@@ -107,9 +105,10 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Acquire source ZIP
         id: acquire
-        run: python scripts/acquire_zip.py
-            --source "${{ inputs.zip_source || 'input-directory' }}"
-            --url "${{ inputs.zip_url }}"
+        run: |
+          python scripts/acquire_zip.py \
+            --source "${{ inputs.zip_source || 'input-directory' }}" \
+            --url "${{ inputs.zip_url }}" \
             --tag "${{ inputs.release_tag }}"
 
       # ---------------------------------------------------------------------
@@ -120,18 +119,20 @@ jobs:
         run: python scripts/extract_zip.py --zip "${{ steps.acquire.outputs.zip_path }}"
 
       # ---------------------------------------------------------------------
-      # Step 3: Detect project
+      # Step 3: Detect project (writes detection.json)
       # ---------------------------------------------------------------------
       - name: Detect project type
         id: detect
         run: |
-          python scripts/detect_project.py --root "${{ steps.extract.outputs.project_root }}" --output detection.json
+          python scripts/detect_project.py \
+            --root "${{ steps.extract.outputs.project_root }}" \
+            --output detection.json
           echo "::group::Detection JSON"
           cat detection.json
           echo "::endgroup::"
 
       # ---------------------------------------------------------------------
-      # Step 4: Configure toolchain
+      # Step 4: Configure toolchain (writes toolchain.json)
       # ---------------------------------------------------------------------
       - name: Configure toolchain
         id: toolchain
@@ -140,9 +141,7 @@ jobs:
             --root "${{ steps.extract.outputs.project_root }}" \
             --detect detection.json \
             --android-sdk "$ANDROID_SDK_ROOT" \
-            | tee toolchain.json
-          # Extract json to file for downstream steps
-          python -c "import json,sys; d=json.load(open('toolchain.json')); open('toolchain.json','w').write(json.dumps(d,indent=2))"
+            --output toolchain.json
           echo "::group::Toolchain JSON"
           cat toolchain.json
           echo "::endgroup::"
@@ -157,7 +156,6 @@ jobs:
           java-version: "${{ steps.toolchain.outputs.jdk_version }}"
           cache: "gradle"
 
-      # For legacy projects, also install JDK 8 as a fallback path
       - name: Set up JDK 8 (legacy fallback)
         if: steps.toolchain.outputs.jdk_version == '8'
         uses: actions/setup-java@v4
@@ -167,25 +165,47 @@ jobs:
 
       # ---------------------------------------------------------------------
       # Step 6: Set up Android SDK
+      # NOTE: android-actions/setup-android@v3 has a bug where multi-line
+      # YAML `packages:` input is passed to sdkmanager as a single argument
+      # containing embedded newlines, causing it to fail. We work around this
+      # by passing packages as a single space-separated string.
+      # We also continue-on-error and re-run via sdkmanager directly if the
+      # action fails — that way the build keeps going.
       # ---------------------------------------------------------------------
-      - name: Set up Android SDK
+      - name: Set up Android SDK (action)
+        id: sdk_action
+        continue-on-error: true
         uses: android-actions/setup-android@v3
         with:
-          packages: |
-            tools
-            platform-tools
-            build-tools;34.0.0
-            build-tools;33.0.2
-            build-tools;32.0.0
-            build-tools;30.0.3
-            platforms;android-34
-            platforms;android-33
-            platforms;android-31
-            platforms;android-30
-            platforms;android-29
-            platforms;android-28
-            platforms;android-26
-            platforms;android-25
+          packages: "platform-tools build-tools;34.0.0 build-tools;33.0.2 build-tools;32.0.0 build-tools;30.0.3 platforms;android-34 platforms;android-33 platforms;android-31 platforms;android-30 platforms;android-29 platforms;android-28 platforms;android-26 platforms;android-25"
+
+      - name: Set up Android SDK (fallback via sdkmanager)
+        if: steps.sdk_action.outcome == 'failure'
+        run: |
+          echo "Primary SDK setup failed. Falling back to direct sdkmanager calls."
+          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMGR" ]; then
+            SDKMGR=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
+          fi
+          echo "Using sdkmanager at: $SDKMGR"
+          for pkg in \
+            "platform-tools" \
+            "build-tools;34.0.0" \
+            "build-tools;33.0.2" \
+            "build-tools;32.0.0" \
+            "build-tools;30.0.3" \
+            "platforms;android-34" \
+            "platforms;android-33" \
+            "platforms;android-31" \
+            "platforms;android-30" \
+            "platforms;android-29" \
+            "platforms;android-28" \
+            "platforms;android-26" \
+            "platforms;android-25"; do
+            echo "Installing $pkg..."
+            yes | "$SDKMGR" "$pkg" >/tmp/sdk-install.log 2>&1 || echo "WARNING: install of $pkg failed (may already be present)"
+          done
+          echo "SDK fallback setup complete."
 
       # ---------------------------------------------------------------------
       # Step 7: Install NDK if needed
@@ -193,12 +213,13 @@ jobs:
       - name: Install NDK (detected version)
         if: steps.toolchain.outputs.needs_ndk == 'true' || github.event.inputs.enable_ndk == 'true'
         run: |
+          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMGR" ]; then
+            SDKMGR=$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
+          fi
           echo "Installing NDK ${{ steps.toolchain.outputs.ndk_version }}"
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            "ndk;${{ steps.toolchain.outputs.ndk_version }}" || true
-          # Also install CMake
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            "cmake;3.22.1" || true
+          yes | "$SDKMGR" "ndk;${{ steps.toolchain.outputs.ndk_version }}" || true
+          yes | "$SDKMGR" "cmake;3.22.1" || true
 
       # ---------------------------------------------------------------------
       # Step 8: Set up Flutter (if needed)
@@ -240,28 +261,27 @@ jobs:
             gradle-
 
       # ---------------------------------------------------------------------
-      # Step 11: Build the project
+      # Step 11: Build the project (writes build.json)
       # ---------------------------------------------------------------------
       - name: Build project
         id: build
         continue-on-error: true
-        working-directory: ${{ steps.extract.outputs.project_root }}
         run: |
           python "$GITHUB_WORKSPACE/scripts/build_project.py" \
             --root "${{ steps.extract.outputs.project_root }}" \
             --detect "$GITHUB_WORKSPACE/detection.json" \
             --toolchain "$GITHUB_WORKSPACE/toolchain.json" \
             --variant "${{ inputs.build_variant || 'auto' }}" \
-            --log-dir "$GITHUB_WORKSPACE/.androidforge/logs"
-
-      - name: Mark build as failed for downstream steps
-        if: steps.build.outputs.build_succeeded != 'true'
-        run: |
-          echo "::warning::Build step reported failure or did not succeed."
-          echo "build_failed=true" >> "$GITHUB_ENV"
+            --log-dir "$GITHUB_WORKSPACE/.androidforge/logs" \
+            --output "$GITHUB_WORKSPACE/build.json" || true
+          # Always emit a minimal build.json if the script didn't write one
+          if [ ! -f "$GITHUB_WORKSPACE/build.json" ]; then
+            echo '{"build_succeeded": false, "successful_command": null, "exit_code": -1, "log_file": null}' > "$GITHUB_WORKSPACE/build.json"
+          fi
+          cat "$GITHUB_WORKSPACE/build.json"
 
       # ---------------------------------------------------------------------
-      # Step 12: Collect APKs (even if build partially failed — debug outputs may exist)
+      # Step 12: Collect APKs (writes collect.json; runs even on build failure)
       # ---------------------------------------------------------------------
       - name: Collect APKs
         id: collect
@@ -270,7 +290,12 @@ jobs:
           python "$GITHUB_WORKSPACE/scripts/collect_apk.py" \
             --root "${{ steps.extract.outputs.project_root }}" \
             --variant "${{ inputs.build_variant || 'auto' }}" \
-            --output-dir "$GITHUB_WORKSPACE/output" || true
+            --output-dir "$GITHUB_WORKSPACE/output" \
+            --output-json "$GITHUB_WORKSPACE/collect.json" || true
+          if [ ! -f "$GITHUB_WORKSPACE/collect.json" ]; then
+            echo '{"apk_count": 0, "primary": null, "all_apks": []}' > "$GITHUB_WORKSPACE/collect.json"
+          fi
+          cat "$GITHUB_WORKSPACE/collect.json"
 
       # ---------------------------------------------------------------------
       # Step 13: Upload APK artifact
@@ -304,8 +329,9 @@ jobs:
           name: AndroidForge-logs
           path: |
             .androidforge/logs/
-            ${{ steps.extract.outputs.project_root }}/build/
+            ${{ steps.extract.outputs.project_root }}/build/outputs/
             ${{ steps.extract.outputs.project_root }}/**/build/reports/
+            ${{ steps.extract.outputs.project_root }}/**/build/outputs/
           if-no-files-found: ignore
           retention-days: 14
 
@@ -328,8 +354,8 @@ jobs:
           python "$GITHUB_WORKSPACE/scripts/build_summary.py" \
             --detect "$GITHUB_WORKSPACE/detection.json" \
             --toolchain "$GITHUB_WORKSPACE/toolchain.json" \
-            --build "${{ steps.build.outputs.json || '{}' }}" \
-            --collect "${{ steps.collect.outputs.json || '{}' }}" || true
+            --build "$GITHUB_WORKSPACE/build.json" \
+            --collect "$GITHUB_WORKSPACE/collect.json" || true
 
       # ---------------------------------------------------------------------
       # Final: fail the job if the build itself failed

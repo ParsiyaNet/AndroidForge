@@ -192,6 +192,7 @@ def main() -> int:
     parser.add_argument("--detect", required=True, help="Detection JSON (string or file path)")
     parser.add_argument("--rules", default=None, help="Path to toolchain-rules.yaml (default: <repo>/config/...)")
     parser.add_argument("--android-sdk", default=os.environ.get("ANDROID_SDK_ROOT", "/usr/local/lib/android/sdk"))
+    parser.add_argument("--output", default=None, help="Write JSON summary to this file")
     args = parser.parse_args()
 
     rules = load_rules(Path(args.rules) if args.rules else None)
@@ -277,7 +278,11 @@ def main() -> int:
     }
 
     # Output JSON
-    print(json.dumps(result, indent=2))
+    output = json.dumps(result, indent=2)
+    if args.output:
+        Path(args.output).write_text(output)
+    else:
+        print(output)
 
     # Write to GITHUB_OUTPUT
     gh_output = os.environ.get("GITHUB_OUTPUT")

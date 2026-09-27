@@ -72,6 +72,7 @@ def main() -> int:
     parser.add_argument("--root", required=True, help="Project root path")
     parser.add_argument("--variant", default="auto", choices=["auto", "debug", "release", "bundle"])
     parser.add_argument("--output-dir", default=None, help="Where to copy selected APKs (default: <repo>/output)")
+    parser.add_argument("--output-json", default=None, help="Write JSON summary to this file")
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
@@ -124,7 +125,11 @@ def main() -> int:
         "all_apks": collected,
         "output_directory": str(output_dir),
     }
-    print(json.dumps(result, indent=2))
+    output = json.dumps(result, indent=2)
+    if args.output_json:
+        Path(args.output_json).write_text(output)
+    else:
+        print(output)
 
     gh_output = os.environ.get("GITHUB_OUTPUT")
     if gh_output:
