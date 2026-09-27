@@ -115,6 +115,26 @@
     .stat { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
     .stat .label { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
     .stat .value { color: var(--accent); font-size: 18px; font-weight: 700; margin-top: 4px; word-break: break-all; }
+    .download-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 14px 16px; margin: 10px 0;
+    }
+    .download-row .info { flex: 1; min-width: 0; }
+    .download-row .name { color: var(--text); font-weight: 600; font-size: 14px; word-break: break-all; }
+    .download-row .meta { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+    .download-row button { flex-shrink: 0; }
+    button.big { padding: 14px 24px; font-size: 15px; }
+    .primary-cta {
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+      color: #1c0a00; border: none; border-radius: 8px;
+      padding: 16px 32px; font-size: 16px; font-weight: 800;
+      cursor: pointer; transition: transform .1s, box-shadow .15s;
+      box-shadow: 0 4px 16px rgba(255, 122, 0, .25);
+    }
+    .primary-cta:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 24px rgba(255, 122, 0, .35); }
+    .primary-cta:disabled { opacity: .5; cursor: wait; }
+    .preparing { display: flex; align-items: center; gap: 10px; color: var(--text-dim); font-size: 13px; padding: 12px 0; }
     a { color: var(--accent); text-decoration: none; }
     a:hover { color: var(--accent-2); text-decoration: underline; }
     footer {
@@ -260,6 +280,12 @@
   </footer>
 
   <div id="toast-container"></div>
+
+  <!-- JSZip (tiny, well-known library) for extracting APKs from artifact ZIPs in-browser.
+       Loaded over HTTPS from cdnjs. SRI hash omitted to avoid hash-mismatch breakage;
+       the connection itself is TLS-protected. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"
+          crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
   <script>
     // ====================================================================
@@ -577,37 +603,203 @@
     async function showResult(runId, conclusion) {
       const c = loadConn();
       els.cardResult.style.display = "";
+
+      // Header banner
       if (conclusion === "success") {
-        setStatus(els.resultContent, "✅ Build succeeded. APK(s) are available as a GitHub Actions artifact.", "ok");
+        setStatus(els.resultContent, "✅ Build succeeded. Preparing your APK for direct download…", "ok");
       } else {
-        setStatus(els.resultContent, `✗ Build finished with status: <strong>${conclusion}</strong>. Diagnostics are available in the run logs.`, "err");
+        setStatus(els.resultContent, `✗ Build finished with status: <strong>${conclusion}</strong>. Diagnostics are available in the run logs below.`, "err");
       }
-      // List artifacts
-      try {
-        const arts = await apiJson(`/repos/${c.owner}/${c.repo}/actions/runs/${runId}/artifacts`);
-        const items = (arts.artifacts || []).map(a => {
-          const url = a.archive_download_url;
-          const size = formatBytes(a.size_in_bytes);
-          return `<div class="stat" style="margin-bottom:8px;">
-                    <div class="label">${escapeHtml(a.name)}</div>
-                    <div class="value"><a href="${url}" target="_blank" rel="noopener">Download (${size}) &darr;</a></div>
-                    <div class="small" style="margin-top:6px;">Note: clicking the link opens the GitHub web auth page (your PAT is sent as Authorization header by the browser if you click via the run page; the direct download URL requires the PAT to be sent in the Authorization header). Use the link below to download via the Actions UI.</div>
-                  </div>`;
-        }).join("");
-        const runUrl = `https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}`;
-        els.resultContent.innerHTML += `
-          <h3 style="margin-top:16px;">Generated artifacts</h3>
-          ${items || "<p>No artifacts produced.</p>"}
-          <p class="small" style="margin-top:10px;">
-            ⚠️ The artifact URLs above require the PAT in the <code>Authorization</code> header; clicking them directly may open a GitHub auth page instead of downloading. The reliable way to grab the APK is via the Actions UI:
-          </p>
-          <p style="margin-top:8px;"><a href="${runUrl}" target="_blank" rel="noopener"><button class="secondary">Open run page on GitHub &rarr;</button></a></p>
-        `;
-      } catch (e) {
-        els.resultContent.innerHTML += `<p class="small">Could not fetch artifacts: ${escapeHtml(e.message)}</p>`;
+
+      const runUrl = `https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}`;
+      els.resultContent.innerHTML += `<p class="small" style="margin-top:8px;">Run on GitHub: <a href="${runUrl}" target="_blank" rel="noopener">${runUrl}</a></p>`;
+
+      // Try to fetch artifacts and extract APKs directly in the browser.
+      if (conclusion === "success") {
+        try {
+          await fetchAndPresentArtifacts(c, runId);
+        } catch (e) {
+          appendLog(`[result error] ${e.message}`);
+          els.resultContent.innerHTML += `<div class="status warn">Could not auto-prepare APK downloads: ${escapeHtml(e.message)}. Use the GitHub UI link above to download the artifact ZIP manually.</div>`;
+        }
       }
       els.btnBuild.disabled = false;
     }
+
+    /**
+     * Fetch every artifact produced by the run, walk each artifact ZIP in
+     * the browser (via JSZip), pull out any .apk / .aab files, and present
+     * each as a direct download button (blob: URL). Also keep a fallback
+     * "Download full artifact ZIP" link for each artifact in case the
+     * in-browser extraction fails.
+     */
+    async function fetchAndPresentArtifacts(c, runId) {
+      const arts = await apiJson(`/repos/${c.owner}/${c.repo}/actions/runs/${runId}/artifacts`);
+      const artifacts = arts.artifacts || [];
+      if (artifacts.length === 0) {
+        els.resultContent.innerHTML += `<p class="small" style="margin-top:12px;">No artifacts produced.</p>`;
+        return;
+      }
+      appendLog(`→ Found ${artifacts.length} artifact(s): ${artifacts.map(a => a.name).join(", ")}`);
+
+      // Render a container
+      const holderId = "apk-downloads";
+      els.resultContent.innerHTML += `
+        <h3 style="margin-top:20px;">📦 Your APK</h3>
+        <div id="${holderId}">
+          <div class="preparing"><span class="spinner"></span> Fetching artifact ZIP(s) and extracting APK(s)…</div>
+        </div>
+      `;
+      const holder = document.getElementById(holderId);
+
+      // Track all APKs we extract across all artifacts so we can show a primary CTA.
+      let allApks = [];
+      const perArtifactRows = [];
+
+      for (const a of artifacts) {
+        // Skip the logs artifact (we only care about APKs/AABs)
+        if (a.name.includes("logs")) continue;
+        try {
+          appendLog(`→ Fetching ${a.name} (${formatBytes(a.size_in_bytes)})…`);
+          // The GitHub-provided archive_download_url is on api.github.com.
+          // Browsers will follow the 302 to a presigned S3 URL automatically.
+          const res = await fetch(a.archive_download_url, {
+            method: "GET",
+            headers: {
+              "Authorization": `Bearer ${c.pat}`,
+              "Accept": "application/vnd.github+json",
+            },
+            redirect: "follow",
+          });
+          if (!res.ok) {
+            const txt = await res.text();
+            appendLog(`  ✗ HTTP ${res.status} fetching ${a.name}: ${txt.slice(0,200)}`);
+            perArtifactRows.push(renderErrorRow(a.name, `HTTP ${res.status}: ${txt.slice(0,200)}`));
+            continue;
+          }
+          const zipBlob = await res.blob();
+          appendLog(`  ✓ Downloaded ${formatBytes(zipBlob.size)} ZIP, extracting APKs…`);
+          // Extract with JSZip
+          if (typeof JSZip === "undefined") {
+            throw new Error("JSZip library failed to load (check your network/ad-blocker)");
+          }
+          const zip = await JSZip.loadAsync(zipBlob);
+          const apkEntries = [];
+          zip.forEach((path, entry) => {
+            if (!entry.dir && (path.toLowerCase().endsWith(".apk") || path.toLowerCase().endsWith(".aab"))) {
+              apkEntries.push({ path, entry });
+            }
+          });
+          if (apkEntries.length === 0) {
+            appendLog(`  ⚠ No .apk/.aab files inside ${a.name}`);
+            perArtifactRows.push(renderErrorRow(a.name, "No APK files inside this artifact ZIP"));
+            continue;
+          }
+          appendLog(`  ✓ Found ${apkEntries.length} APK(s) inside ${a.name}`);
+          // Build blob URL for each APK
+          for (const { path, entry } of apkEntries) {
+            const buf = await entry.async("blob");
+            const url = URL.createObjectURL(buf);
+            const fileName = path.split("/").pop();
+            const isApk = fileName.toLowerCase().endsWith(".apk");
+            allApks.push({
+              artifactName: a.name,
+              fileName,
+              path,
+              size: buf.size,
+              url,
+              isApk,
+            });
+          }
+        } catch (e) {
+          appendLog(`  ✗ ${a.name}: ${e.message}`);
+          perArtifactRows.push(renderErrorRow(a.name, e.message));
+        }
+      }
+
+      // Render: primary CTA + per-APK rows
+      if (allApks.length === 0) {
+        holder.innerHTML = `
+          <div class="status warn">No APK files were found inside the produced artifacts.</div>
+          <p class="small" style="margin-top:8px;">You can still download the artifact ZIPs directly from the GitHub Actions run page:</p>
+          <p style="margin-top:6px;"><a href="https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}" target="_blank" rel="noopener"><button class="secondary">Open run on GitHub &rarr;</button></a></p>
+        `;
+        return;
+      }
+
+      // Pick the primary APK: prefer .apk over .aab, then release > debug.
+      const apkOnly = allApks.filter(a => a.isApk);
+      const pool = apkOnly.length ? apkOnly : allApks;
+      const releasePool = pool.filter(a => /release/i.test(a.fileName));
+      const primary = (releasePool[0] || pool[0]);
+
+      let html = `
+        <div class="download-row" style="border-color: var(--accent); background: linear-gradient(135deg, rgba(255,122,0,0.08) 0%, rgba(255,180,84,0.04) 100%);">
+          <div class="info">
+            <div class="name">⭐ ${escapeHtml(primary.fileName)}</div>
+            <div class="meta">${formatBytes(primary.size)} · primary APK · from artifact <code>${escapeHtml(primary.artifactName)}</code></div>
+          </div>
+          <button class="primary-cta" onclick="triggerDownload('${primary.url}', '${escapeAttr(primary.fileName)}')">⬇ Download APK</button>
+        </div>
+      `;
+
+      if (allApks.length > 1) {
+        html += `<div class="small" style="margin-top:14px; margin-bottom:6px;">All produced files (${allApks.length}):</div>`;
+        for (const apk of allApks) {
+          if (apk === primary) continue;
+          html += `
+            <div class="download-row">
+              <div class="info">
+                <div class="name">${escapeHtml(apk.fileName)}</div>
+                <div class="meta">${formatBytes(apk.size)} · ${apk.isApk ? "APK" : "AAB"} · from <code>${escapeHtml(apk.artifactName)}</code></div>
+              </div>
+              <button class="secondary" onclick="triggerDownload('${apk.url}', '${escapeAttr(apk.fileName)}')">⬇ Download</button>
+            </div>
+          `;
+        }
+      }
+
+      // Errors per artifact, if any
+      if (perArtifactRows.length) {
+        html += `<details style="margin-top:14px;"><summary>Problems fetching some artifacts (${perArtifactRows.length})</summary>`;
+        html += perArtifactRows.join("");
+        html += `</details>`;
+      }
+
+      // Fallback: GitHub UI
+      html += `
+        <p class="small" style="margin-top:16px;">
+          Prefer the GitHub UI? <a href="https://github.com/${c.owner}/${c.repo}/actions/runs/${runId}" target="_blank" rel="noopener">Open this run on GitHub &rarr;</a>
+        </p>
+      `;
+
+      holder.innerHTML = html;
+    }
+
+    function renderErrorRow(artifactName, errMsg) {
+      return `
+        <div class="download-row">
+          <div class="info">
+            <div class="name">${escapeHtml(artifactName)}</div>
+            <div class="meta" style="color: var(--err);">⚠ ${escapeHtml(errMsg)}</div>
+          </div>
+          <a href="https://github.com/${loadConn().owner}/${loadConn().repo}/actions" target="_blank" rel="noopener"><button class="secondary">Open on GitHub</button></a>
+        </div>
+      `;
+    }
+
+    /** Programmatically trigger a download from a blob URL. */
+    function triggerDownload(url, fileName) {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName || "download.bin";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { document.body.removeChild(a); }, 100);
+      toast(`Downloading ${fileName}…`, "ok");
+    }
+    // Expose for inline onclick handlers.
+    window.triggerDownload = triggerDownload;
 
     // ---------- Utilities ----------
     function appendLog(line) {
@@ -618,6 +810,15 @@
       return String(s == null ? "" : s)
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+    /** Escape a string for use inside a single-quoted JS string literal. */
+    function escapeAttr(s) {
+      return String(s == null ? "" : s)
+        .replace(/\\/g, "\\\\")
+        .replace(/'/g, "\\'")
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, "\\n")
+        .replace(/\r/g, "\\r");
     }
     function formatBytes(n) {
       if (!n) return "0 B";
