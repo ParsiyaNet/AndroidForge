@@ -304,11 +304,21 @@ def main() -> int:
     parser.add_argument("--root", required=True, help="Project root path (used to find log dir)")
     parser.add_argument("--variant", default="auto")
     parser.add_argument("--log-file", default=None, help="Explicit path to build log")
+    parser.add_argument("--log-dir", default=None,
+                        help="Directory containing build-*.log files. If --log-file is not "
+                             "provided, the most recent log in this dir is used.")
     args = parser.parse_args()
 
     log_path: Path
     if args.log_file:
         log_path = Path(args.log_file)
+    elif args.log_dir:
+        log_dir = Path(args.log_dir)
+        candidates = sorted(log_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True) if log_dir.exists() else []
+        if not candidates:
+            print(f"ERROR: no build logs found in {log_dir}", file=sys.stderr)
+            return 1
+        log_path = candidates[0]
     else:
         # Find the most recent build log
         log_dir = Path(args.root).parent / "androidforge-logs"
