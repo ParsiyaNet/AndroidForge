@@ -503,10 +503,15 @@
       if (!c.owner || !c.repo || !c.pat) { toast("Detect your repo first (step 1)", "err"); return; }
       if (!currentFile) { toast("Pick a ZIP first", "err"); return; }
 
-      // GitHub Contents API has a 1 MB file size limit for direct uploads.
-      if (currentFile.size > 1024 * 1024) {
-        toast(`ZIP is ${formatBytes(currentFile.size)} — over the 1 MB Contents API limit. Please split or compress.`, "err", 8000);
+      // The Git Database API supports files up to 100 MB. Hard-block anything bigger.
+      const MAX_BYTES = 100 * 1024 * 1024; // 100 MB
+      if (currentFile.size > MAX_BYTES) {
+        toast(`ZIP is ${formatBytes(currentFile.size)} — over the 100 MB GitHub API limit. Please split the project or use Git LFS.`, "err", 8000);
         return;
+      }
+      if (currentFile.size > 50 * 1024 * 1024) {
+        // Warn (but allow) for > 50 MB — the upload will take a while.
+        toast(`Heads up: ${formatBytes(currentFile.size)} is large — base64 encoding + upload may take 30+ seconds.`, "warn", 8000);
       }
 
       els.btnBuild.disabled = true;
@@ -537,35 +542,113 @@
         const base64Content = arrayBufferToBase64(fileBuffer);
         appendLog(`  ✓ Read ${base64Content.length} chars of base64`);
 
-        // 3. Commit the ZIP to input/ via the GitHub Contents API.
-        //    This endpoint is on api.github.com (CORS-enabled), unlike
-        //    uploads.github.com (release asset uploads, no CORS).
+        // 3. Commit the ZIP to input/ via the Git Database API (5 calls).
+        //    This API supports files up to 100 MB (vs 1 MB for the Contents
+        //    API). All endpoints are on api.github.com (CORS-enabled).
+        //    Flow: create blob → get current ref → get current tree →
+        //    create new tree → create commit → update ref.
         const timestamp = Date.now();
         const safeName = currentFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
         const commitPath = `input/web-build-${timestamp}-${safeName}`;
         const commitMessage = `Web build upload: ${currentFile.name} [AndroidForge web UI]`;
-        appendLog(`→ Committing ${commitPath} to main branch…`);
-        els.uploadStatus.textContent = "committing ZIP to repo…";
-        const commitRes = await apiJson(`/repos/${c.owner}/${c.repo}/contents/${commitPath}`, {
-          method: "PUT",
+
+        // 3a. Create the blob (holds the file content, base64-encoded).
+        appendLog(`→ Creating blob (${formatBytes(currentFile.size)})…`);
+        els.uploadStatus.textContent = "uploading blob…";
+        const blobRes = await apiJson(`/repos/${c.owner}/${c.repo}/git/blobs`, {
+          method: "POST",
+          body: JSON.stringify({ content: base64Content, encoding: "base64" }),
+          headers: { "Content-Type": "application/json" },
+        });
+        const blobSha = blobRes.sha;
+        appendLog(`  ✓ Blob: ${blobSha.substring(0, 7)}`);
+
+        // 3b. Get the current HEAD commit + tree SHA of the default branch.
+        appendLog(`→ Reading current HEAD of ${repoInfo.default_branch}…`);
+        els.uploadStatus.textContent = "reading HEAD…";
+        const refRes = await apiJson(`/repos/${c.owner}/${c.repo}/git/refs/heads/${repoInfo.default_branch}`);
+        const currentCommitSha = refRes.object.sha;
+        const commitObj = await apiJson(`/repos/${c.owner}/${c.repo}/git/commits/${currentCommitSha}`);
+        const currentTreeSha = commitObj.tree.sha;
+        appendLog(`  ✓ HEAD = ${currentCommitSha.substring(0, 7)}, tree = ${currentTreeSha.substring(0, 7)}`);
+
+        // 3c. Create a new tree based on the current one, with the ZIP added.
+        appendLog(`→ Creating tree entry at ${commitPath}…`);
+        els.uploadStatus.textContent = "creating tree…";
+        const treeRes = await apiJson(`/repos/${c.owner}/${c.repo}/git/trees`, {
+          method: "POST",
           body: JSON.stringify({
-            message: commitMessage,
-            content: base64Content,
-            branch: repoInfo.default_branch,
+            base_tree: currentTreeSha,
+            tree: [{ path: commitPath, mode: "100644", type: "blob", sha: blobSha }],
           }),
           headers: { "Content-Type": "application/json" },
         });
-        const commitSha = commitRes.commit.sha;
-        window._currentCommitSha = commitSha;
-        appendLog(`  ✓ Committed as ${commitSha.substring(0, 7)} (${commitPath})`);
+        const newTreeSha = treeRes.sha;
+        appendLog(`  ✓ New tree: ${newTreeSha.substring(0, 7)}`);
+
+        // 3d. Create a new commit pointing to the new tree.
+        appendLog(`→ Creating commit…`);
+        els.uploadStatus.textContent = "creating commit…";
+        const newCommitRes = await apiJson(`/repos/${c.owner}/${c.repo}/git/commits`, {
+          method: "POST",
+          body: JSON.stringify({
+            message: commitMessage,
+            tree: newTreeSha,
+            parents: [currentCommitSha],
+          }),
+          headers: { "Content-Type": "application/json" },
+        });
+        const newCommitSha = newCommitRes.sha;
+        appendLog(`  ✓ Commit: ${newCommitSha.substring(0, 7)}`);
+
+        // 3e. Update the branch ref to point to the new commit (fast-forward).
+        //     If another push moved the branch concurrently (HTTP 422),
+        //     retry the tree+commit+ref flow once on the new HEAD.
+        appendLog(`→ Updating ref refs/heads/${repoInfo.default_branch}…`);
+        els.uploadStatus.textContent = "updating branch…";
+        try {
+          await apiJson(`/repos/${c.owner}/${c.repo}/git/refs/heads/${repoInfo.default_branch}`, {
+            method: "PATCH",
+            body: JSON.stringify({ sha: newCommitSha, force: false }),
+            headers: { "Content-Type": "application/json" },
+          });
+          window._currentCommitSha = newCommitSha;
+        } catch (e) {
+          if (e.status !== 422) throw e;
+          appendLog(`  ⚠ Branch moved concurrently; retrying on new HEAD…`);
+          const refRes2 = await apiJson(`/repos/${c.owner}/${c.repo}/git/refs/heads/${repoInfo.default_branch}`);
+          const curHead2 = refRes2.object.sha;
+          const commitObj2 = await apiJson(`/repos/${c.owner}/${c.repo}/git/commits/${curHead2}`);
+          const treeRes2 = await apiJson(`/repos/${c.owner}/${c.repo}/git/trees`, {
+            method: "POST",
+            body: JSON.stringify({
+              base_tree: commitObj2.tree.sha,
+              tree: [{ path: commitPath, mode: "100644", type: "blob", sha: blobSha }],
+            }),
+            headers: { "Content-Type": "application/json" },
+          });
+          const newCommitRes2 = await apiJson(`/repos/${c.owner}/${c.repo}/git/commits`, {
+            method: "POST",
+            body: JSON.stringify({
+              message: commitMessage,
+              tree: treeRes2.sha,
+              parents: [curHead2],
+            }),
+            headers: { "Content-Type": "application/json" },
+          });
+          await apiJson(`/repos/${c.owner}/${c.repo}/git/refs/heads/${repoInfo.default_branch}`, {
+            method: "PATCH",
+            body: JSON.stringify({ sha: newCommitRes2.sha, force: false }),
+            headers: { "Content-Type": "application/json" },
+          });
+          window._currentCommitSha = newCommitRes2.sha;
+          appendLog(`  ✓ Ref updated on retry (commit ${newCommitRes2.sha.substring(0, 7)})`);
+        }
+        appendLog(`  ✓ ${commitPath} committed`);
 
         // 4. Trigger workflow_dispatch with zip_source=input-directory.
-        //    The push to input/**.zip will ALSO trigger the workflow via
-        //    the push event filter, but we want a single deterministic
-        //    run with the user's chosen variant. So we trigger dispatch
-        //    explicitly — the push run will be cancelled by the
-        //    concurrency group OR we just pick the dispatch run by id.
         appendLog("→ Triggering build workflow…");
+        els.uploadStatus.textContent = "dispatching workflow…";
         const inputs = {
           zip_source: "input-directory",
           zip_url: "",
@@ -587,6 +670,7 @@
         // 5. Wait briefly, then find the workflow_dispatch run.
         els.progressBar.style.width = "15%";
         appendLog("→ Waiting for workflow run to register…");
+        els.uploadStatus.textContent = "waiting for run…";
         await sleep(8000);
         const runs = await apiJson(`/repos/${c.owner}/${c.repo}/actions/runs?per_page=5&event=workflow_dispatch`);
         // Pick the most recent dispatch run on this branch.
