@@ -187,45 +187,57 @@ def apply_fixes(detect: dict, fixes: list[dict], android_sdk_root: str) -> list[
     # daemon's default heap is often too small for Flutter / multi-module
     # projects, leading to "Gradle build daemon has been stopped: since
     # the JVM garbage collector is thrashing" during flutter build apk.
-    # We inject `org.gradle.jvmargs=-Xmx4g` if the project's existing
-    # gradle.properties doesn't already set a larger heap.
-    gradle_props = root / "gradle.properties"
+    # We inject `org.gradle.jvmargs=-Xmx4g` in THREE places:
+    #   1. <project_root>/gradle.properties  (root-level, for plain Gradle projects)
+    #   2. <project_root>/android/gradle.properties  (Flutter projects invoke Gradle from android/)
+    #   3. ~/.gradle/gradle.properties  (global, applies to ALL Gradle invocations)
     HEAP_LINE = "org.gradle.jvmargs=-Xmx4g -XX:+UseG1GC -Dfile.encoding=UTF-8"
-    if gradle_props.exists():
-        content = gradle_props.read_text(encoding="utf-8", errors="replace")
-        # Parse the existing org.gradle.jvmargs value, if any.
-        m = re.search(r"^org\.gradle\.jvmargs\s*=\s*(.+)$", content, re.MULTILINE)
-        if m:
-            existing = m.group(1).strip()
-            # If the existing heap is smaller than 4g, replace it.
-            heap_match = re.search(r"-Xmx(\d+)([gm])", existing, re.IGNORECASE)
-            if heap_match:
-                size = int(heap_match.group(1))
-                unit = heap_match.group(2).lower()
-                existing_mb = size * (1024 if unit == "g" else 1)
-                if existing_mb < 4096:
-                    new_content = re.sub(
-                        r"^org\.gradle\.jvmargs\s*=.*$",
-                        HEAP_LINE,
-                        content,
-                        flags=re.MULTILINE,
-                    )
-                    if new_content != content:
-                        gradle_props.write_text(new_content)
-                        applied.append(f"Bumped gradle.properties jvmargs from '{existing}' to '{HEAP_LINE}'")
-            # else: existing heap is already >= 4g, leave it alone
+
+    def _inject_gradle_properties(props_path: Path, location_label: str) -> None:
+        if props_path.exists():
+            content = props_path.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r"^org\.gradle\.jvmargs\s*=\s*(.+)$", content, re.MULTILINE)
+            if m:
+                existing = m.group(1).strip()
+                heap_match = re.search(r"-Xmx(\d+)([gm])", existing, re.IGNORECASE)
+                if heap_match:
+                    size = int(heap_match.group(1))
+                    unit = heap_match.group(2).lower()
+                    existing_mb = size * (1024 if unit == "g" else 1)
+                    if existing_mb < 4096:
+                        new_content = re.sub(
+                            r"^org\.gradle\.jvmargs\s*=.*$",
+                            HEAP_LINE,
+                            content,
+                            flags=re.MULTILINE,
+                        )
+                        if new_content != content:
+                            props_path.write_text(new_content)
+                            applied.append(f"Bumped {location_label} jvmargs from '{existing}' to '{HEAP_LINE}'")
+                # else: heap is already >= 4g, leave alone
+            else:
+                with props_path.open("a") as f:
+                    f.write(f"\n# AndroidForge: ensure enough heap for the Gradle daemon\n{HEAP_LINE}\n")
+                applied.append(f"Added org.gradle.jvmargs to {location_label}")
         else:
-            # No jvmargs line at all — append ours.
-            with gradle_props.open("a") as f:
-                f.write(f"\n# AndroidForge: ensure enough heap for the Gradle daemon\n{HEAP_LINE}\n")
-            applied.append(f"Added org.gradle.jvmargs={HEAP_LINE} to gradle.properties")
-    else:
-        # No gradle.properties — create one.
-        gradle_props.write_text(
-            f"# AndroidForge: ensure enough heap for the Gradle daemon\n{HEAP_LINE}\n"
-            f"org.gradle.daemon=false\n"
-        )
-        applied.append(f"Created gradle.properties with jvmargs={HEAP_LINE}")
+            props_path.parent.mkdir(parents=True, exist_ok=True)
+            props_path.write_text(
+                f"# AndroidForge: ensure enough heap for the Gradle daemon\n{HEAP_LINE}\n"
+                f"org.gradle.daemon=false\n"
+            )
+            applied.append(f"Created {location_label} with jvmargs={HEAP_LINE}")
+
+    # 1. Project root gradle.properties
+    _inject_gradle_properties(root / "gradle.properties", "gradle.properties (root)")
+    # 2. For Flutter projects: android/gradle.properties (this is the one
+    #    Gradle actually reads when invoked from the android/ subdir).
+    android_dir = root / "android"
+    if android_dir.is_dir():
+        _inject_gradle_properties(android_dir / "gradle.properties", "android/gradle.properties (Flutter)")
+    # 3. Global gradle.properties in the user's home — applies to ALL
+    #    Gradle invocations on the runner regardless of project.
+    home_gradle = Path.home() / ".gradle" / "gradle.properties"
+    _inject_gradle_properties(home_gradle, "~/.gradle/gradle.properties (global)")
 
     # Always disable build cache & parallel for very old gradle (safer)
     return applied
