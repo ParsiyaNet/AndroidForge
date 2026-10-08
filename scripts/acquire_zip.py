@@ -85,6 +85,11 @@ def main() -> int:
                         choices=["input-directory", "download-url", "release-asset"])
     parser.add_argument("--url", default=None, help="Direct download URL")
     parser.add_argument("--tag", default=None, help="GitHub Release tag")
+    parser.add_argument("--path", default=None,
+                        help="Explicit path (relative to repo root) of the source ZIP. "
+                             "Used when source=input-directory to disambiguate when "
+                             "multiple ZIPs are present in input/. Falls back to "
+                             "auto-detection (first .zip found) when not provided.")
     parser.add_argument("--dest-dir", default=None, help="Where to place the ZIP (default: temp)")
     args = parser.parse_args()
 
@@ -94,18 +99,42 @@ def main() -> int:
     zip_path: Path | None = None
 
     if args.source == "input-directory":
-        zip_path = find_input_zip()
-        if not zip_path:
-            print("ERROR: no .zip file found under input/. Please commit your ZIP to input/ "
-                  "or use the download-url / release-asset source.", file=sys.stderr)
-            return 1
+        # If the caller provided an explicit path, use it — this prevents
+        # the bug where multiple ZIPs in input/ cause the build to pick
+        # the wrong one (the auto-detector just grabs the first .zip it
+        # sees, which is filesystem-order-dependent).
+        if args.path:
+            candidate = Path(args.path)
+            # Resolve relative to repo root if not absolute
+            if not candidate.is_absolute():
+                candidate = REPO_ROOT / candidate
+            if not candidate.exists():
+                print(f"ERROR: explicit --path not found: {candidate}", file=sys.stderr)
+                return 1
+            if not candidate.is_file():
+                print(f"ERROR: --path is not a file: {candidate}", file=sys.stderr)
+                return 1
+            if not candidate.name.lower().endswith(".zip"):
+                print(f"ERROR: --path does not end in .zip: {candidate}", file=sys.stderr)
+                return 1
+            zip_path = candidate
+            print(f"Using explicit ZIP path: {zip_path}", flush=True)
+        else:
+            zip_path = find_input_zip()
+            if not zip_path:
+                print("ERROR: no .zip file found under input/. Please commit your ZIP to input/ "
+                      "or use the download-url / release-asset source, or pass --path explicitly.",
+                      file=sys.stderr)
+                return 1
+            print(f"Auto-detected ZIP from input/ directory: {zip_path} "
+                  "(warning: multiple ZIPs may exist — pass --path to disambiguate)", flush=True)
         # Copy to dest dir for consistency
         target = dest_dir / zip_path.name
         if zip_path != target:
             import shutil
             shutil.copy2(zip_path, target)
             zip_path = target
-        print(f"Using ZIP from input/ directory: {zip_path}", flush=True)
+        print(f"Using ZIP: {zip_path}", flush=True)
 
     elif args.source == "download-url":
         if not args.url:

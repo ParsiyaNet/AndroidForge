@@ -25,6 +25,11 @@ on:
           - "input-directory"
           - "download-url"
           - "release-asset"
+      zip_path:
+        description: "Exact path (relative to repo root) of the source ZIP in input/. Required when zip_source=input-directory and multiple ZIPs are present — otherwise the build picks the wrong one."
+        required: false
+        type: string
+        default: ""
       zip_url:
         description: "Direct download URL (only used if 'download-url' is selected)"
         required: false
@@ -112,7 +117,8 @@ jobs:
           python scripts/acquire_zip.py \
             --source "${{ inputs.zip_source || 'input-directory' }}" \
             --url "${{ inputs.zip_url }}" \
-            --tag "${{ inputs.release_tag }}"
+            --tag "${{ inputs.release_tag }}" \
+            --path "${{ inputs.zip_path }}"
 
       # ---------------------------------------------------------------------
       # Step 2: Extract ZIP

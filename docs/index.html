@@ -646,11 +646,15 @@
         }
         appendLog(`  ✓ ${commitPath} committed`);
 
-        // 4. Trigger workflow_dispatch with zip_source=input-directory.
+        // 4. Trigger workflow_dispatch with zip_source=input-directory
+        //    AND the exact zip_path we just committed. Without zip_path,
+        //    acquire_zip.py auto-detects the FIRST .zip in input/ — which
+        //    would be wrong if the user has previously uploaded other ZIPs.
         appendLog("→ Triggering build workflow…");
         els.uploadStatus.textContent = "dispatching workflow…";
         const inputs = {
           zip_source: "input-directory",
+          zip_path: commitPath,
           zip_url: "",
           release_tag: "",
           build_variant: els.variant.value,
