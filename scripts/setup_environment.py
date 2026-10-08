@@ -192,10 +192,23 @@ def apply_fixes(detect: dict, fixes: list[dict], android_sdk_root: str) -> list[
     #   2. <project_root>/android/gradle.properties  (Flutter projects invoke Gradle from android/)
     #   3. ~/.gradle/gradle.properties  (global, applies to ALL Gradle invocations)
     HEAP_LINE = "org.gradle.jvmargs=-Xmx4g -XX:+UseG1GC -Dfile.encoding=UTF-8"
+    # AndroidX is required by most modern Flutter plugins. If a project
+    # doesn't enable it explicitly, Gradle aborts with:
+    #   "Configuration :app:debugRuntimeClasspath contains AndroidX
+    #    dependencies, but the android.useAndroidX property is not enabled."
+    # We proactively set useAndroidX=true + enableJetifier=true so legacy
+    # support-library references are auto-migrated. Both flags are no-ops
+    # for projects that already use AndroidX, so this is safe to set always.
+    ANDROIDX_LINES = [
+        "android.useAndroidX=true",
+        "android.enableJetifier=true",
+    ]
 
     def _inject_gradle_properties(props_path: Path, location_label: str) -> None:
         if props_path.exists():
             content = props_path.read_text(encoding="utf-8", errors="replace")
+            changes: list[str] = []
+            # Handle jvmargs
             m = re.search(r"^org\.gradle\.jvmargs\s*=\s*(.+)$", content, re.MULTILINE)
             if m:
                 existing = m.group(1).strip()
@@ -212,20 +225,33 @@ def apply_fixes(detect: dict, fixes: list[dict], android_sdk_root: str) -> list[
                             flags=re.MULTILINE,
                         )
                         if new_content != content:
-                            props_path.write_text(new_content)
-                            applied.append(f"Bumped {location_label} jvmargs from '{existing}' to '{HEAP_LINE}'")
+                            content = new_content
+                            changes.append(f"bumped jvmargs from '{existing}'")
                 # else: heap is already >= 4g, leave alone
             else:
-                with props_path.open("a") as f:
-                    f.write(f"\n# AndroidForge: ensure enough heap for the Gradle daemon\n{HEAP_LINE}\n")
-                applied.append(f"Added org.gradle.jvmargs to {location_label}")
+                content += f"\n# AndroidForge: ensure enough heap for the Gradle daemon\n{HEAP_LINE}\n"
+                changes.append("added jvmargs")
+            # Handle android.useAndroidX
+            if not re.search(r"^android\.useAndroidX\s*=", content, re.MULTILINE):
+                content += f"\n# AndroidForge: enable AndroidX (most Flutter plugins need it)\n"
+                for line in ANDROIDX_LINES:
+                    content += f"{line}\n"
+                changes.append("added useAndroidX=true + enableJetifier=true")
+            if changes:
+                props_path.write_text(content)
+                applied.append(f"Updated {location_label}: {', '.join(changes)}")
         else:
             props_path.parent.mkdir(parents=True, exist_ok=True)
-            props_path.write_text(
-                f"# AndroidForge: ensure enough heap for the Gradle daemon\n{HEAP_LINE}\n"
+            content = (
+                f"# AndroidForge: ensure enough heap for the Gradle daemon\n"
+                f"{HEAP_LINE}\n"
                 f"org.gradle.daemon=false\n"
+                f"\n# AndroidForge: enable AndroidX (most Flutter plugins need it)\n"
             )
-            applied.append(f"Created {location_label} with jvmargs={HEAP_LINE}")
+            for line in ANDROIDX_LINES:
+                content += f"{line}\n"
+            props_path.write_text(content)
+            applied.append(f"Created {location_label} with jvmargs + useAndroidX + enableJetifier")
 
     # 1. Project root gradle.properties
     _inject_gradle_properties(root / "gradle.properties", "gradle.properties (root)")
