@@ -106,6 +106,7 @@ def main() -> int:
 
     # Filter build commands based on requested variant
     all_commands = toolchain.get("build_commands", [])
+    prep_commands = toolchain.get("prep_commands", []) or []
     if args.variant != "auto":
         # Filter by requested variant
         filtered = []
@@ -133,7 +134,33 @@ def main() -> int:
         # Flutter requires Java 17 for Android builds
         pass
 
-    # Run build
+    # ---- Run prep commands first ----
+    # These are commands like `flutter pub get` that must run before the
+    # actual build, but whose exit code does NOT determine whether the
+    # build succeeded (they don't produce an APK — they just download
+    # dependencies). We log their output but never let their success
+    # short-circuit the build_commands loop below.
+    if prep_commands:
+        print(f"\n=== Running {len(prep_commands)} prep command(s) — these do not count as build success ===", flush=True)
+    for cmd in prep_commands:
+        # Apply the same gradlew sh-wrap if needed (rare for prep, but safe)
+        if use_wrapper and cmd and cmd[0].endswith("gradlew"):
+            gradlew_path = Path(cmd[0])
+            if gradlew_path.exists():
+                try:
+                    gradlew_path.chmod(gradlew_path.stat().st_mode | 0o111)
+                except Exception:
+                    pass
+                cmd = ["/bin/sh", str(gradlew_path)] + cmd[1:]
+        rc, log = run(cmd, root, log_dir / f"prep-{int(time.time())}-{len(cmd)}.log", build_env)
+        if rc != 0:
+            # Prep failure is a warning, not a build failure — the build
+            # commands might still succeed (e.g. dependencies cached).
+            print(f"⚠ prep command failed (rc={rc}): {' '.join(cmd)}", flush=True)
+        else:
+            print(f"✓ prep command ok: {' '.join(cmd)}", flush=True)
+
+    # ---- Run build commands (stop on first success) ----
     success = False
     last_rc = 1
     last_log: str = ""
@@ -171,6 +198,7 @@ def main() -> int:
         "successful_command": successful_command,
         "exit_code": last_rc,
         "log_file": last_log,
+        "prep_commands_run": prep_commands,
         "build_commands_attempted": all_commands,
     }
     output = json.dumps(result, indent=2)

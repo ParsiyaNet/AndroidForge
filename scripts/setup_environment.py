@@ -244,10 +244,16 @@ def main() -> int:
     fixes = determine_legacy_fixes(detect, rules)
     applied_fixes = apply_fixes(detect, fixes, args.android_sdk)
 
-    # Decide build commands
+    # Decide build commands. Prep commands run unconditionally first (e.g.
+    # `flutter pub get` to download dependencies); build commands are tried
+    # in order and the first one to succeed marks the build as successful.
+    # Prep commands must NOT be in build_commands — otherwise build_project.py
+    # would stop on `flutter pub get` (which exits 0 without producing an APK)
+    # and never actually run `flutter build apk`.
+    prep_commands: list[list[str]] = []
     if needs_flutter:
+        prep_commands = [["flutter", "pub", "get"]]
         build_commands = [
-            ["flutter", "pub", "get"],
             ["flutter", "build", "apk", "--debug"],
             ["flutter", "build", "apk", "--release"],
         ]
@@ -274,6 +280,7 @@ def main() -> int:
         "needs_ndk": needs_ndk,
         "needs_gradle": detect.get("project_type") in ("gradle", "flutter"),
         "legacy_fixes_applied": applied_fixes,
+        "prep_commands": prep_commands,
         "build_commands": build_commands,
     }
 
