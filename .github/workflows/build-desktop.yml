@@ -174,6 +174,35 @@ jobs:
         shell: bash
         run: flutter pub get
 
+      # Replace Flutter's symlinks in .plugin_symlinks/ with Windows
+      # junctions (mklink /J). Junctions are Windows-native and don't
+      # have the "Cannot extract through symlink" issue that CMake's tar
+      # has with regular Windows symlinks. This is needed because the
+      # media_kit_libs_windows_audio plugin's CMakeLists.txt extracts a
+      # pre-built binary archive through .plugin_symlinks/ paths.
+      - name: Replace symlinks with junctions (Windows)
+        if: matrix.platform == 'windows'
+        working-directory: ${{ steps.extract.outputs.project_root }}
+        shell: pwsh
+        run: |
+          $symlinkDir = "windows\flutter\ephemeral\.plugin_symlinks"
+          if (Test-Path $symlinkDir) {
+            Get-ChildItem $symlinkDir | ForEach-Object {
+              $linkPath = $_.FullName
+              if ((Get-Item $linkPath -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                $target = (Get-Item $linkPath -Force).Target
+                if (-not $target) {
+                  $target = (Get-Item $linkPath -Force).LinkTarget
+                }
+                if ($target) {
+                  Write-Host "Replacing symlink $linkPath -> $target with junction"
+                  Remove-Item -Force -Recurse $linkPath
+                  cmd /c mklink /J "$linkPath" "$target" | Out-Null
+                }
+              }
+            }
+          }
+
       - name: Build (Linux)
         if: matrix.platform == 'linux'
         working-directory: ${{ steps.extract.outputs.project_root }}
