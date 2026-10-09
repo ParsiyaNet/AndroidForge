@@ -112,6 +112,19 @@ jobs:
       - name: Enable Flutter desktop
         run: flutter config --enable-linux-desktop --enable-windows-desktop --enable-macos-desktop
 
+      # The windows-latest runner image (windows-2025-vs2026) ships with
+      # Visual Studio 2026, but Flutter hardcodes the CMake generator to
+      # "Visual Studio 16 2019" (and doesn't honor CMAKE_GENERATOR in
+      # 3.27 either). Install VS 2019 Build Tools + the C++ workload so
+      # CMake's "Visual Studio 16 2019" generator finds an actual VS 2019
+      # installation. ~5 min install, ~3 GB on disk.
+      - name: Install Visual Studio 2019 Build Tools (Windows)
+        if: matrix.platform == 'windows'
+        shell: cmd
+        run: |
+          choco install visualstudio2019buildtools --params "--includeRecommended --add Microsoft.VisualStudio.Workload.VCTools" -y --no-progress || exit 0
+          choco install visualstudio2019-workload-vctools -y --no-progress || exit 0
+
       - name: (Linux) Install desktop build deps
         if: matrix.platform == 'linux'
         run: |
