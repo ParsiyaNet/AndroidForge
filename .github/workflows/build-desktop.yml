@@ -111,20 +111,26 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build clang libgtk-3-dev libglib2.0-dev pkg-config libmpv-dev libsecret-1-dev
+          sudo apt-get install -y cmake ninja-build clang libgtk-3-dev libglib2.0-dev pkg-config libmpv-dev libsecret-1-dev libayatana-appindicator3-dev
 
       # ---------------------------------------------------------------------
-      # Acquire + extract + detect + configure (reuse the Android scripts)
+      # Acquire + extract + detect + configure (reuse the Android scripts).
+      # All steps that use bash multi-line `\` continuation or other bash
+      # syntax MUST declare `shell: bash` so they work on Windows runners
+      # (where the default shell is PowerShell and doesn't understand `\`).
       # ---------------------------------------------------------------------
       - name: Acquire source ZIP
         id: acquire
+        shell: bash
         run: python scripts/acquire_zip.py --source input-directory --path "${{ inputs.zip_path }}"
 
       - name: Extract source ZIP
         id: extract
+        shell: bash
         run: python scripts/extract_zip.py --zip "${{ steps.acquire.outputs.zip_path }}"
 
       - name: Detect project
+        shell: bash
         run: |
           python scripts/detect_project.py --root "${{ steps.extract.outputs.project_root }}" --output detection.json
           echo "::group::Detection JSON"
@@ -132,6 +138,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Configure toolchain (writes toolchain.json)
+        shell: bash
         run: |
           python scripts/setup_environment.py \
             --root "${{ steps.extract.outputs.project_root }}" \
@@ -146,16 +153,19 @@ jobs:
       # ---------------------------------------------------------------------
       - name: flutter pub get
         working-directory: ${{ steps.extract.outputs.project_root }}
+        shell: bash
         run: flutter pub get
 
       - name: Build (Linux)
         if: matrix.platform == 'linux'
         working-directory: ${{ steps.extract.outputs.project_root }}
+        shell: bash
         run: flutter build linux --release
 
       - name: Build (Windows)
         if: matrix.platform == 'windows'
         working-directory: ${{ steps.extract.outputs.project_root }}
+        shell: bash
         run: flutter build windows --release
 
       # ---------------------------------------------------------------------
