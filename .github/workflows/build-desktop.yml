@@ -31,6 +31,11 @@ permissions:
 
 env:
   PYTHONUNBUFFERED: "1"
+  # Flutter hardcodes the CMake generator to "Visual Studio 16 2019" by
+  # default, but the windows-latest runner only has Visual Studio 2022
+  # installed. Setting CMAKE_GENERATOR tells Flutter to use VS 2022 instead.
+  # See: https://github.com/flutter/flutter/blob/master/packages/flutter_tools/lib/src/windows/build_windows.dart
+  CMAKE_GENERATOR: "Visual Studio 17 2022"
 
 jobs:
   # Decide which platforms to build based on the `target` input.
