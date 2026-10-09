@@ -1,0 +1,239 @@
+name: Build Desktop (Windows + Linux)
+
+# AndroidForge — Flutter desktop builder.
+# Triggered by the Pages UI (or manually) to build a Flutter project's
+# desktop targets: Linux x64 and Windows x64. macOS is intentionally
+# excluded (the user asked only for Windows + Linux).
+#
+# Output: GitHub Releases with tag `web-build-output-<run_id>-<platform>`
+# containing the bundled binary + assets as a downloadable archive.
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_path:
+        description: "Exact path of the source ZIP in input/ (must be a Flutter project)"
+        required: true
+        type: string
+      target:
+        description: "Target platform(s)"
+        type: choice
+        required: true
+        default: "all"
+        options:
+          - "all"
+          - "linux"
+          - "windows"
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  # Decide which platforms to build based on the `target` input.
+  # The job-level `if:` doesn't support the `matrix` context, so we
+  # compute the matrix dynamically here and pass it to the build job.
+  decide:
+    name: Decide matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+      empty: ${{ steps.set.outputs.empty }}
+    steps:
+      - id: set
+        run: |
+          target="${{ inputs.target }}"
+          case "$target" in
+            all)
+              echo 'matrix=[{"os":"ubuntu-latest","platform":"linux","archive_ext":"tar.gz"},{"os":"windows-latest","platform":"windows","archive_ext":"zip"}]' >> "$GITHUB_OUTPUT"
+              echo "empty=false" >> "$GITHUB_OUTPUT"
+              ;;
+            linux)
+              echo 'matrix=[{"os":"ubuntu-latest","platform":"linux","archive_ext":"tar.gz"}]' >> "$GITHUB_OUTPUT"
+              echo "empty=false" >> "$GITHUB_OUTPUT"
+              ;;
+            windows)
+              echo 'matrix=[{"os":"windows-latest","platform":"windows","archive_ext":"zip"}]' >> "$GITHUB_OUTPUT"
+              echo "empty=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "empty=true" >> "$GITHUB_OUTPUT"
+              echo 'matrix=[]' >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  build:
+    name: Build for ${{ matrix.platform }}
+    needs: decide
+    if: ${{ needs.decide.outputs.empty != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.decide.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: "stable"
+          cache: true
+
+      - name: Enable Flutter desktop
+        run: flutter config --enable-linux-desktop --enable-windows-desktop --enable-macos-desktop
+
+      - name: (Linux) Install desktop build deps
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libgtk-3-dev libglib2.0-dev pkg-config libmpv-dev libsecret-1-dev
+
+      # ---------------------------------------------------------------------
+      # Acquire + extract + detect + configure (reuse the Android scripts)
+      # ---------------------------------------------------------------------
+      - name: Acquire source ZIP
+        id: acquire
+        run: python scripts/acquire_zip.py --source input-directory --path "${{ inputs.zip_path }}"
+
+      - name: Extract source ZIP
+        id: extract
+        run: python scripts/extract_zip.py --zip "${{ steps.acquire.outputs.zip_path }}"
+
+      - name: Detect project
+        run: |
+          python scripts/detect_project.py --root "${{ steps.extract.outputs.project_root }}" --output detection.json
+          echo "::group::Detection JSON"
+          cat detection.json
+          echo "::endgroup::"
+
+      - name: Configure toolchain (writes toolchain.json)
+        run: |
+          python scripts/setup_environment.py \
+            --root "${{ steps.extract.outputs.project_root }}" \
+            --detect detection.json \
+            --output toolchain.json
+          echo "::group::Toolchain JSON"
+          cat toolchain.json
+          echo "::endgroup::"
+
+      # ---------------------------------------------------------------------
+      # Build
+      # ---------------------------------------------------------------------
+      - name: flutter pub get
+        working-directory: ${{ steps.extract.outputs.project_root }}
+        run: flutter pub get
+
+      - name: Build (Linux)
+        if: matrix.platform == 'linux'
+        working-directory: ${{ steps.extract.outputs.project_root }}
+        run: flutter build linux --release
+
+      - name: Build (Windows)
+        if: matrix.platform == 'windows'
+        working-directory: ${{ steps.extract.outputs.project_root }}
+        run: flutter build windows --release
+
+      # ---------------------------------------------------------------------
+      # Package the build output (bundle folder) into a single archive
+      # ---------------------------------------------------------------------
+      - name: Package (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          PROJECT_ROOT="${{ steps.extract.outputs.project_root }}"
+          # Flutter Linux output path: build/linux/x64/release/bundle/
+          BUNDLE_DIR="$PROJECT_ROOT/build/linux/x64/release/bundle"
+          if [ ! -d "$BUNDLE_DIR" ]; then
+            echo "ERROR: bundle dir not found at $BUNDLE_DIR"
+            echo "Listing build/linux/ contents:"
+            find "$PROJECT_ROOT/build/linux" -maxdepth 4 -type d 2>/dev/null || true
+            exit 1
+          fi
+          echo "Bundle contents:"
+          ls -la "$BUNDLE_DIR"
+          cd "$BUNDLE_DIR"
+          OUT="$GITHUB_WORKSPACE/harmonymusic-linux-x64.tar.gz"
+          tar -czf "$OUT" *
+          ls -la "$OUT"
+
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          PROJECT_ROOT="${{ steps.extract.outputs.project_root }}"
+          # Flutter Windows output path: build/windows/x64/runner/Release/
+          BUNDLE_DIR="$PROJECT_ROOT/build/windows/x64/runner/Release"
+          if [ ! -d "$BUNDLE_DIR" ]; then
+            echo "ERROR: bundle dir not found at $BUNDLE_DIR"
+            echo "Listing build/windows/ contents:"
+            find "$PROJECT_ROOT/build/windows" -maxdepth 5 -type d 2>/dev/null || true
+            exit 1
+          fi
+          echo "Bundle contents:"
+          ls -la "$BUNDLE_DIR"
+          cd "$BUNDLE_DIR"
+          OUT="$GITHUB_WORKSPACE/harmonymusic-windows-x64.zip"
+          7z a -tzip "$OUT" *
+          ls -la "$OUT"
+
+      # ---------------------------------------------------------------------
+      # Publish to a release tagged web-build-output-<run_id>-<platform>
+      # (so the Pages UI can find it predictably)
+      # ---------------------------------------------------------------------
+      - name: Publish to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="web-build-output-${{ github.run_id }}-${{ matrix.platform }}"
+          ASSET="$GITHUB_WORKSPACE/harmonymusic-${{ matrix.platform }}-x64.${{ matrix.archive_ext }}"
+          echo "Creating release $TAG…"
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target main \
+            --title "Desktop build #${{ github.run_number }} (${{ matrix.platform }})" \
+            --notes "Auto-generated by AndroidForge desktop workflow run ${{ github.run_id }}." \
+            --prerelease || true
+          echo "Uploading $ASSET…"
+          gh release upload "$TAG" "$ASSET" --clobber --repo "$GITHUB_REPOSITORY"
+          echo "## 📦 Desktop build (${{ matrix.platform }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Tag: \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "URL: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo "Asset: \`harmonymusic-${{ matrix.platform }}-x64.${{ matrix.archive_ext }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AndroidForge-desktop-logs-${{ matrix.platform }}
+          path: |
+            ${{ steps.extract.outputs.project_root }}/build/
+            .androidforge/logs/
+          if-no-files-found: ignore
+          retention-days: 14

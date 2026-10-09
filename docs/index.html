@@ -217,7 +217,17 @@
       </div>
       <div class="grid-2">
         <div class="row">
-          <label for="variant">Build variant</label>
+          <label for="target">Target platform</label>
+          <select id="target">
+            <option value="android" selected>Android (APK)</option>
+            <option value="linux">Linux x64 (tar.gz)</option>
+            <option value="windows">Windows x64 (zip)</option>
+            <option value="all-desktop">All desktop (Linux + Windows)</option>
+            <option value="all">All (Android + Linux + Windows)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="variant">Build variant <span class="small">(Android only)</span></label>
           <select id="variant">
             <option value="auto" selected>auto (try debug → release → bundle)</option>
             <option value="debug">debug</option>
@@ -225,14 +235,14 @@
             <option value="bundle">bundle (.aab)</option>
           </select>
         </div>
-        <div class="row">
-          <label for="enable-ndk">
-            <input type="checkbox" id="enable-ndk" /> Force-install NDK
-          </label>
-        </div>
+      </div>
+      <div class="row">
+        <label for="enable-ndk">
+          <input type="checkbox" id="enable-ndk" /> Force-install NDK <span class="small">(Android only)</span>
+        </label>
       </div>
       <div class="btn-row">
-        <button id="btn-build" disabled>⚒️ Build APK</button>
+        <button id="btn-build" disabled>⚒️ Build</button>
         <span id="upload-status" class="small"></span>
       </div>
     </section>
@@ -302,7 +312,8 @@
 
     const API = "https://api.github.com";
     const STORAGE_KEY = "androidforge.conn.v2";
-    const WORKFLOW_FILE = "build-android.yml";
+    const WORKFLOW_ANDROID = "build-android.yml";
+    const WORKFLOW_DESKTOP = "build-desktop.yml";
     const RELEASE_TAG_PREFIX = "web-build-";
 
     // ---------- DOM ----------
@@ -312,7 +323,7 @@
       btnSave: $("btn-save"), btnClear: $("btn-clear"), connStatus: $("conn-status"),
       cardUpload: $("card-upload"),
       fileDrop: $("file-drop"), fileInput: $("file-input"), fileLabel: $("file-label"),
-      variant: $("variant"), enableNdk: $("enable-ndk"),
+      target: $("target"), variant: $("variant"), enableNdk: $("enable-ndk"),
       btnBuild: $("btn-build"), uploadStatus: $("upload-status"),
       cardProgress: $("card-progress"),
       runStatus: $("run-status"), runId: $("run-id"), runElapsed: $("run-elapsed"),
@@ -383,7 +394,7 @@
       const repos = await listRes.json();
       // Filter to repos that have the workflow file
       for (const r of repos) {
-        const checkRes = await fetch(`${API}/repos/${r.full_name}/contents/.github/workflows/${WORKFLOW_FILE}`, { headers });
+        const checkRes = await fetch(`${API}/repos/${r.full_name}/contents/.github/workflows/${WORKFLOW_ANDROID}`, { headers });
         if (checkRes.ok) {
           return { owner: r.owner.login, repo: r.name };
         }
@@ -652,44 +663,95 @@
         //    would be wrong if the user has previously uploaded other ZIPs.
         appendLog("→ Triggering build workflow…");
         els.uploadStatus.textContent = "dispatching workflow…";
-        const inputs = {
-          zip_source: "input-directory",
-          zip_path: commitPath,
-          zip_url: "",
-          release_tag: "",
-          build_variant: els.variant.value,
-          enable_ndk: els.enableNdk.checked,
-        };
-        try {
-          await api(`/repos/${c.owner}/${c.repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`, {
-            method: "POST",
-            body: JSON.stringify({ ref: repoInfo.default_branch, inputs }),
-            headers: { "Content-Type": "application/json" },
-          });
-        } catch (e) {
-          if (e.status && e.status >= 400) throw e;
-        }
-        appendLog("  ✓ Workflow dispatched");
 
-        // 5. Wait briefly, then find the workflow_dispatch run.
+        // Determine which workflow(s) to dispatch based on target selection.
+        // For "all", we dispatch BOTH android and desktop workflows.
+        // For "all-desktop", we dispatch only the desktop workflow (target=all).
+        // The desktop workflow's matrix filters by the `target` input itself,
+        // so for "linux"/"windows" we pass that exact value.
+        const targetChoice = els.target.value;
+        const wantAndroid = (targetChoice === "android" || targetChoice === "all");
+        const wantDesktop = (targetChoice !== "android");  // linux, windows, all-desktop, all
+        const desktopTarget = (targetChoice === "linux" || targetChoice === "windows")
+          ? targetChoice
+          : "all";  // all-desktop, all → "all" (matrix builds both)
+
+        const dispatched = [];
+        if (wantAndroid) {
+          const inputs = {
+            zip_source: "input-directory",
+            zip_path: commitPath,
+            zip_url: "",
+            release_tag: "",
+            build_variant: els.variant.value,
+            enable_ndk: els.enableNdk.checked,
+          };
+          try {
+            await api(`/repos/${c.owner}/${c.repo}/actions/workflows/${WORKFLOW_ANDROID}/dispatches`, {
+              method: "POST",
+              body: JSON.stringify({ ref: repoInfo.default_branch, inputs }),
+              headers: { "Content-Type": "application/json" },
+            });
+            dispatched.push({ workflow: "android", workflowId: WORKFLOW_ANDROID });
+            appendLog("  ✓ Android workflow dispatched");
+          } catch (e) {
+            if (e.status && e.status >= 400) throw e;
+          }
+        }
+        if (wantDesktop) {
+          const inputs = {
+            zip_path: commitPath,
+            target: desktopTarget,
+          };
+          try {
+            await api(`/repos/${c.owner}/${c.repo}/actions/workflows/${WORKFLOW_DESKTOP}/dispatches`, {
+              method: "POST",
+              body: JSON.stringify({ ref: repoInfo.default_branch, inputs }),
+              headers: { "Content-Type": "application/json" },
+            });
+            dispatched.push({ workflow: "desktop", workflowId: WORKFLOW_DESKTOP });
+            appendLog(`  ✓ Desktop workflow dispatched (target=${desktopTarget})`);
+          } catch (e) {
+            if (e.status && e.status >= 400) throw e;
+          }
+        }
+        if (dispatched.length === 0) {
+          throw new Error("No workflow was dispatched — check the target selection");
+        }
+        window._dispatched = dispatched;
+
+        // 5. Wait briefly, then find the workflow_dispatch run(s).
         els.progressBar.style.width = "15%";
         appendLog("→ Waiting for workflow run to register…");
         els.uploadStatus.textContent = "waiting for run…";
         await sleep(8000);
-        const runs = await apiJson(`/repos/${c.owner}/${c.repo}/actions/runs?per_page=5&event=workflow_dispatch`);
-        // Pick the most recent dispatch run on this branch.
-        const run = (runs.workflow_runs || []).find(r =>
+        const runs = await apiJson(`/repos/${c.owner}/${c.repo}/actions/runs?per_page=8&event=workflow_dispatch`);
+        // Find the most recent dispatch runs on this branch — there might
+        // be two (android + desktop) if the user picked "all".
+        const dispatchedRuns = (runs.workflow_runs || []).filter(r =>
           r.head_branch === repoInfo.default_branch && r.event === "workflow_dispatch"
         );
-        if (!run) throw new Error("Could not find the dispatched workflow run");
-        window._currentRunId = run.id;
-        els.runId.textContent = run.id;
-        els.runLink.href = run.html_url;
-        appendLog(`  ✓ Run ${run.id} queued: ${run.html_url}`);
+        if (dispatchedRuns.length === 0) throw new Error("Could not find the dispatched workflow run");
+        // We'll track all dispatched runs (typically 1, up to 2 for "all").
+        // For UI simplicity, poll only the most recent run (the second-dispatched
+        // one — usually the desktop workflow). The release-fetch step at the
+        // end queries all three possible tags (web-build-output-<id>,
+        // web-build-output-<id>-linux, web-build-output-<id>-windows).
+        const primaryRun = dispatchedRuns[0];
+        window._currentRunId = primaryRun.id;
+        window._allRunIds = dispatchedRuns.map(r => r.id);
+        els.runId.textContent = dispatchedRuns.length > 1
+          ? `${dispatchedRuns.length} runs (${dispatchedRuns.map(r => r.id).join(", ")})`
+          : String(primaryRun.id);
+        els.runLink.href = primaryRun.html_url;
+        for (const r of dispatchedRuns) {
+          appendLog(`  ✓ Run ${r.id} queued: ${r.html_url} (${r.name})`);
+        }
         els.progressBar.style.width = "20%";
 
-        // 6. Poll until completion
-        startPolling(run.id);
+        // 6. Poll until completion (poll the primary run; when it completes,
+        //    also check the others if any)
+        startPolling(primaryRun.id);
       } catch (e) {
         appendLog(`✗ ERROR: ${e.message}`);
         setStatus(els.uploadStatus, `✗ ${escapeHtml(e.message)}`, "err");
@@ -779,7 +841,7 @@
 
       try {
         if (conclusion === "success") {
-          setStatus(els.resultContent, "✅ Build succeeded. Fetching your APK from the output release…", "ok");
+          setStatus(els.resultContent, "✅ Build succeeded. Fetching your binaries from the output release(s)…", "ok");
         } else {
           setStatus(els.resultContent, `✗ Build finished with status: <strong>${conclusion}</strong>. Diagnostics are in the run logs below.`, "err");
         }
@@ -787,32 +849,60 @@
         els.resultContent.innerHTML += `<p class="small" style="margin-top:8px;">Run on GitHub: <a href="${runUrl}" target="_blank" rel="noopener">${runUrl}</a></p>`;
         els.resultContent.innerHTML += `<p class="small" style="margin-top:8px;"><a href="${runUrl}" target="_blank" rel="noopener"><button class="secondary">Open run on GitHub &rarr;</button></a></p>`;
 
-        // For successful builds, the workflow creates a release with tag
-        // `web-build-output-<run_id>` and uploads the APKs there. Fetch
-        // that release and offer direct download links. These URLs are
-        // regular GitHub navigation URLs — the browser follows the 302
-        // to S3 automatically and saves the file. No fetch, no CORS,
-        // no auth headers.
+        // For successful builds, the workflow creates a release with one of:
+        //   web-build-output-<run_id>             (Android APK)
+        //   web-build-output-<run_id>-linux      (Linux desktop tar.gz)
+        //   web-build-output-<run_id>-windows     (Windows desktop zip)
+        // Fetch each one that exists and aggregate all assets. Retry with
+        // backoff because the release might not exist immediately after
+        // the workflow's status flips to "completed" (race between the
+        // workflow-completion event and the release-create step).
         if (conclusion === "success" && runId) {
-          const tag = `web-build-output-${runId}`;
-          // The release might not exist immediately after the run completes
-          // (race between workflow completion event and the release-create
-          // step). Retry a few times before giving up.
-          const maxAttempts = 8;
+          // Try every possible tag suffix that might apply for the dispatched run(s).
+          const allRunIds = window._allRunIds || [runId];
+          const candidateTags = new Set();
+          for (const rid of allRunIds) {
+            candidateTags.add(`web-build-output-${rid}`);
+            candidateTags.add(`web-build-output-${rid}-linux`);
+            candidateTags.add(`web-build-output-${rid}-windows`);
+          }
+          const maxAttempts = 10;
           const retryDelayMs = 3000;
+          let collectedAssets = [];
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-              await presentReleaseAssets(c, tag, runId);
-              break; // success — stop retrying
-            } catch (e) {
-              if (attempt >= maxAttempts) {
-                appendLog(`[result error] ${e.message}`);
-                els.resultContent.innerHTML += `<div class="status warn">Could not list release assets (tried ${maxAttempts}× over ${maxAttempts * retryDelayMs / 1000}s): ${escapeHtml(e.message)}. Use the GitHub run link above to download the artifact ZIP manually.</div>`;
-                break;
+            collectedAssets = [];
+            for (const tag of candidateTags) {
+              try {
+                const release = await apiJson(`/repos/${c.owner}/${c.repo}/releases/tags/${tag}`);
+                for (const a of (release.assets || [])) {
+                  // Only keep APK / AAB / tar.gz / zip assets.
+                  const name = (a.name || "").toLowerCase();
+                  if (name.endsWith(".apk") || name.endsWith(".aab") ||
+                      name.endsWith(".tar.gz") || name.endsWith(".zip")) {
+                    collectedAssets.push({ ...a, releaseTag: tag, releaseUrl: release.html_url });
+                  }
+                }
+              } catch (e) {
+                // 404 = release doesn't exist (yet or never). Other errors log.
+                if (e.status && e.status !== 404) {
+                  appendLog(`[release fetch] ${tag}: ${e.message}`);
+                }
               }
-              appendLog(`  ⏳ Release not ready yet, retrying in ${retryDelayMs / 1000}s… (attempt ${attempt + 1}/${maxAttempts})`);
+            }
+            if (collectedAssets.length > 0) {
+              break; // got at least one asset
+            }
+            if (attempt < maxAttempts) {
+              appendLog(`  ⏳ No release assets yet, retrying in ${retryDelayMs / 1000}s… (attempt ${attempt + 1}/${maxAttempts})`);
               await sleep(retryDelayMs);
             }
+          }
+          if (collectedAssets.length === 0) {
+            appendLog(`[result] no assets found in any release`);
+            els.resultContent.innerHTML += `<div class="status warn">No APK / desktop binaries were found in any output release. Use the GitHub run link above to check.</div>`;
+          } else {
+            appendLog(`  ✓ Found ${collectedAssets.length} asset(s): ${collectedAssets.map(a => a.name).join(", ")}`);
+            renderAssets(collectedAssets);
           }
         }
       } finally {
@@ -820,63 +910,56 @@
       }
     }
 
-    /**
-     * Fetch the release created by the workflow for this run, render direct
-     * download buttons for every APK/AAB asset. Returns 200 OK if release
-     * exists; throws on 404 (release not yet created).
-     */
-    async function presentReleaseAssets(c, tag, runId) {
-      appendLog(`→ Listing release assets for tag ${tag}…`);
-      const release = await apiJson(`/repos/${c.owner}/${c.repo}/releases/tags/${tag}`);
-      const assets = (release.assets || []).filter(a =>
-        a.name.toLowerCase().endsWith(".apk") ||
-        a.name.toLowerCase().endsWith(".aab")
-      );
-      if (assets.length === 0) {
-        throw new Error("Release has no APK/AAB assets yet");
-      }
-      appendLog(`  ✓ Found ${assets.length} APK/AAB asset(s): ${assets.map(a => a.name).join(", ")}`);
-
-      // Pick primary: .apk > .aab, release > debug
+    function renderAssets(assets) {
+      // Pick primary: prefer .apk (Android) > .tar.gz (Linux) > .zip (Windows).
+      // Within .apk, prefer release over debug.
       const apkOnly = assets.filter(a => a.name.toLowerCase().endsWith(".apk"));
-      const pool = apkOnly.length ? apkOnly : assets;
-      const releasePool = pool.filter(a => /release/i.test(a.name));
-      const primary = releasePool[0] || pool[0];
+      const tarGz = assets.filter(a => a.name.toLowerCase().endsWith(".tar.gz"));
+      const zips = assets.filter(a => a.name.toLowerCase().endsWith(".zip") && !a.name.toLowerCase().endsWith(".apk"));
+      // Pick a primary from whichever group is most relevant (APK first if any).
+      let primary;
+      if (apkOnly.length) {
+        const releasePool = apkOnly.filter(a => /release/i.test(a.name));
+        primary = releasePool[0] || apkOnly[0];
+      } else if (tarGz.length) {
+        primary = tarGz[0];
+      } else if (zips.length) {
+        primary = zips[0];
+      } else {
+        primary = assets[0];
+      }
 
-      let html = `<h3 style="margin-top:20px;">📦 Your APK</h3>`;
+      let html = `<h3 style="margin-top:20px;">📦 Your binaries</h3>`;
       html += `
         <div class="download-row" style="border-color: var(--accent); background: linear-gradient(135deg, rgba(255,122,0,0.08) 0%, rgba(255,180,84,0.04) 100%);">
           <div class="info">
             <div class="name">⭐ ${escapeHtml(primary.name)}</div>
-            <div class="meta">${formatBytes(primary.size)} · primary APK</div>
+            <div class="meta">${formatBytes(primary.size)} · primary · release ${escapeHtml(primary.releaseTag)}</div>
           </div>
-          <a href="${primary.browser_download_url}" download="${escapeAttr(primary.name)}"><button class="primary-cta">⬇ Download APK</button></a>
+          <a href="${primary.browser_download_url}" download="${escapeAttr(primary.name)}"><button class="primary-cta">⬇ Download</button></a>
         </div>
       `;
-
       if (assets.length > 1) {
         html += `<div class="small" style="margin-top:14px; margin-bottom:6px;">All produced files (${assets.length}):</div>`;
         for (const a of assets) {
           if (a === primary) continue;
-          const kind = a.name.toLowerCase().endsWith(".apk") ? "APK" : "AAB";
+          const name = a.name.toLowerCase();
+          let kind = "binary";
+          if (name.endsWith(".apk")) kind = "APK (Android)";
+          else if (name.endsWith(".aab")) kind = "AAB (Android App Bundle)";
+          else if (name.endsWith(".tar.gz")) kind = "Linux desktop bundle";
+          else if (name.endsWith(".zip")) kind = "Windows desktop bundle";
           html += `
             <div class="download-row">
               <div class="info">
                 <div class="name">${escapeHtml(a.name)}</div>
-                <div class="meta">${formatBytes(a.size)} · ${kind}</div>
+                <div class="meta">${formatBytes(a.size)} · ${kind} · release ${escapeHtml(a.releaseTag)}</div>
               </div>
               <a href="${a.browser_download_url}" download="${escapeAttr(a.name)}"><button class="secondary">⬇ Download</button></a>
             </div>
           `;
         }
       }
-
-      html += `
-        <p class="small" style="margin-top:16px;">
-          Prefer the GitHub UI? <a href="${release.html_url}" target="_blank" rel="noopener">Open this release on GitHub &rarr;</a>
-        </p>
-      `;
-
       els.resultContent.innerHTML += html;
     }
 
