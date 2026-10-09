@@ -105,12 +105,21 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.0"
+          flutter-version: "3.27.0"
           channel: "stable"
           cache: true
 
       - name: Enable Flutter desktop
         run: flutter config --enable-linux-desktop --enable-windows-desktop --enable-macos-desktop
+
+      # Set up the MSVC dev environment so CMake can find Visual Studio 2022
+      # even when Flutter falls back to the hardcoded "Visual Studio 16 2019"
+      # generator (which the windows-latest runner doesn't have).
+      - name: Set up MSVC dev environment (Windows)
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-shell@v1
+        with:
+          arch: x64
 
       - name: (Linux) Install desktop build deps
         if: matrix.platform == 'linux'
@@ -170,8 +179,10 @@ jobs:
       - name: Build (Windows)
         if: matrix.platform == 'windows'
         working-directory: ${{ steps.extract.outputs.project_root }}
-        shell: bash
-        run: flutter build windows --release
+        shell: cmd
+        run: |
+          rmdir /s /q build\windows 2>nul
+          flutter build windows --release
 
       # ---------------------------------------------------------------------
       # Package the build output (bundle folder) into a single archive
