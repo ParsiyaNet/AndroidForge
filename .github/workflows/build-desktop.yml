@@ -112,15 +112,6 @@ jobs:
       - name: Enable Flutter desktop
         run: flutter config --enable-linux-desktop --enable-windows-desktop --enable-macos-desktop
 
-      # Set up the MSVC dev environment so CMake can find Visual Studio 2022
-      # even when Flutter falls back to the hardcoded "Visual Studio 16 2019"
-      # generator (which the windows-latest runner doesn't have).
-      - name: Set up MSVC dev environment (Windows)
-        if: matrix.platform == 'windows'
-        uses: ilammy/msvc-dev-shell@v1
-        with:
-          arch: x64
-
       - name: (Linux) Install desktop build deps
         if: matrix.platform == 'linux'
         run: |
