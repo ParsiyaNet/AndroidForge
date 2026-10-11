@@ -101,7 +101,11 @@ jobs:
   build:
     name: Build APK
     runs-on: ubuntu-latest
-    container: ghcr.io/${{ github.repository_owner }}/androidforge-build-env:latest
+    # The image is published by build-android-image.yml to GHCR.
+    # GHCR normalizes the image name to lowercase, so we use the lowercase
+    # owner here. If you fork the repo, update this to your-lowercase-username
+    # OR override the env var IMAGE_REF below.
+    container: ghcr.io/professional-x/androidforge-build-env:latest
     timeout-minutes: 60
     outputs:
       project_type: ${{ steps.detect.outputs.project_type }}
