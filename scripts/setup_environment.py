@@ -280,9 +280,36 @@ def apply_fixes(detect: dict, fixes: list[dict], android_sdk_root: str) -> list[
 def _inject_repositories(root: Path, applied: list[str], is_flutter: bool) -> None:
     """Inject JitPack / Google / mavenCentral into the project's gradle files
     if not already declared. Non-destructive: only adds, never removes.
+
+    Smart about RepositoriesMode: if the project's settings.gradle(.kts)
+    declares `FAIL_ON_PROJECT_REPOS` or `PREFER_SETTINGS` (the modern Gradle
+    convention), we ONLY inject into settings.gradle's
+    `dependencyResolutionManagement { repositories { } }` block — never into
+    build.gradle. Injecting project-level repos when the build is configured
+    to forbid them causes Gradle to fail with:
+      "Build was configured to prefer settings repositories over project
+       repositories but repository 'maven' was added by build file 'build.gradle'"
     """
-    # Candidates: for Flutter, the relevant files are under android/;
-    # for plain Gradle, they're at the root.
+    # First, scan all settings.gradle files for RepositoriesMode declarations.
+    # If any of them use FAIL_ON_PROJECT_REPOS or PREFER_SETTINGS, we MUST NOT
+    # inject into any build.gradle file.
+    settings_files = [
+        root / "settings.gradle",
+        root / "settings.gradle.kts",
+        root / "android" / "settings.gradle",
+        root / "android" / "settings.gradle.kts",
+    ]
+    forbid_project_repos = False
+    for sf in settings_files:
+        if not sf.exists():
+            continue
+        content = sf.read_text(encoding="utf-8", errors="replace")
+        if "FAIL_ON_PROJECT_REPOS" in content or "PREFER_SETTINGS" in content:
+            forbid_project_repos = True
+            break
+
+    # Build the candidate list. If the project forbids project-level repos,
+    # we restrict to settings.gradle files only.
     candidates: list[Path] = []
     if is_flutter:
         candidates = [
@@ -297,6 +324,9 @@ def _inject_repositories(root: Path, applied: list[str], is_flutter: bool) -> No
         root / "settings.gradle",
         root / "settings.gradle.kts",
     ]
+    # If the project forbids project-level repos, filter out build.gradle files.
+    if forbid_project_repos:
+        candidates = [c for c in candidates if not c.name.startswith("build.gradle")]
 
     REPO_LINES_KTS = [
         'maven { url = uri("https://maven.google.com") }',
@@ -363,16 +393,19 @@ def _inject_repositories(root: Path, applied: list[str], is_flutter: bool) -> No
             # Insert just before the closing brace of this block.
             new_content = new_content[:close_idx] + inject_text + new_content[close_idx:]
             injected = True
-        if not injected:
+        if not injected and not forbid_project_repos:
             # Strategy 2: append a top-level allprojects block.
-            # (works for old Gradle versions, ignored by new ones with
-            # FAIL_ON_PROJECT_REPOS but we tried strategy 1 first.)
-            block = "\n\n// AndroidForge: ensure common public Maven repos\nallprojects {\n    repositories {\n"
-            for line in repo_lines:
-                block += "        " + line + "\n"
-            block += "    }\n}\n"
-            new_content = content + block
-            injected = True
+            # ONLY do this if the project doesn't forbid project-level repos
+            # (otherwise we'd cause the same FAIL_ON_PROJECT_REPOS conflict).
+            # Also, allprojects {} is invalid in settings.gradle — only
+            # append to build.gradle files.
+            if grad.name.startswith("build.gradle"):
+                block = "\n\n// AndroidForge: ensure common public Maven repos\nallprojects {\n    repositories {\n"
+                for line in repo_lines:
+                    block += "        " + line + "\n"
+                block += "    }\n}\n"
+                new_content = content + block
+                injected = True
         if injected and new_content != content:
             grad.write_text(new_content)
             applied.append(f"Injected JitPack/Google/mavenCentral into {grad.relative_to(root) if grad.is_relative_to(root) else grad}")
