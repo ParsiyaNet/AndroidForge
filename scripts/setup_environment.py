@@ -327,37 +327,42 @@ def _inject_repositories(root: Path, applied: list[str], is_flutter: bool) -> No
         # just before its closing brace.
         is_kts = grad.name.endswith(".kts")
         repo_lines = REPO_LINES_KTS if is_kts else REPO_LINES_GROOVY
-        # Strategy 1: find a top-level `repositories {` block and inject.
+        # Process matches in REVERSE order so earlier insertions don't
+        # invalidate the close_idx of later matches. (Each insertion shifts
+        # content after it; processing from end→start keeps earlier indices
+        # valid.)
+        matches = list(re.finditer(r"repositories\s*\{", content, re.IGNORECASE))
+        matches.reverse()
         new_content = content
         injected = False
-        # Find every `repositories {` occurrence (case-insensitive).
-        for m in re.finditer(r"repositories\s*\{", content, re.IGNORECASE):
-            # Find the matching closing brace by counting.
+        for m in matches:
+            # Find the matching closing brace by counting, starting from
+            # the end of the 'repositories {' match.
             start = m.end()
             depth = 1
             i = start
-            while i < len(content) and depth > 0:
-                ch = content[i]
+            while i < len(new_content) and depth > 0:
+                ch = new_content[i]
                 if ch == "{":
                     depth += 1
                 elif ch == "}":
                     depth -= 1
                 i += 1
-            if depth == 0:
-                # i-1 is the index of the closing brace.
-                close_idx = i - 1
-                # Check which repos are missing from this block.
-                block_content = content[start:close_idx]
-                missing = []
-                for line, marker in zip(repo_lines, ["maven.google.com", "mavenCentral()", "plugins.gradle.org", "jitpack.io"]):
-                    if marker not in block_content:
-                        missing.append(line)
-                if not missing:
-                    continue
-                inject_text = "\n        // AndroidForge: ensure common public Maven repos\n        " + "\n        ".join(missing) + "\n"
-                # Insert just before the closing brace.
-                new_content = new_content[:close_idx] + inject_text + new_content[close_idx:]
-                injected = True
+            if depth != 0:
+                continue
+            close_idx = i - 1
+            # Check which repos are missing from THIS block.
+            block_content = new_content[start:close_idx]
+            missing = []
+            for line, marker in zip(repo_lines, ["maven.google.com", "mavenCentral()", "plugins.gradle.org", "jitpack.io"]):
+                if marker not in block_content:
+                    missing.append(line)
+            if not missing:
+                continue
+            inject_text = "\n        // AndroidForge: ensure common public Maven repos\n        " + "\n        ".join(missing) + "\n"
+            # Insert just before the closing brace of this block.
+            new_content = new_content[:close_idx] + inject_text + new_content[close_idx:]
+            injected = True
         if not injected:
             # Strategy 2: append a top-level allprojects block.
             # (works for old Gradle versions, ignored by new ones with
