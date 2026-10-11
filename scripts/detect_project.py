@@ -54,11 +54,19 @@ INDICATOR_FILES: dict[str, str] = {
 # Version extraction patterns (applied to build.gradle / .kts / catalog)
 # ---------------------------------------------------------------------------
 AGP_PATTERNS = [
+    # Modern Kotlin DSL: id("com.android.application") version "8.5.2" apply false
+    r'id\s*\(\s*["\']com\.android\.application["\']\s*\)\s*version\s*["\']([^"\']+)["\']',
+    # Modern Kotlin DSL (no parens): id "com.android.application" version "8.5.2"
+    r'id\s+["\']com\.android\.application["\'].*?version\s*["\']([^"\']+)["\']',
+    # Old Groovy buildscript: classpath 'com.android.tools.build:gradle:8.5.2'
     r"classpath\s+['\"]com\.android\.tools\.build:gradle:([^'\"]+)['\"]",
-    r"id\s+['\"]com\.android\.application['\"].*?version\s+['\"]([^'\"]+)['\"]",
+    # Plain dep reference: com.android.tools.build:gradle:8.5.2
     r"com\.android\.tools\.build:gradle:([^'\"\s]+)",
+    # Version catalog: androidGradlePlugin = "8.5.2"
     r"androidGradlePlugin\s*=\s*['\"]([^'\"]+)['\"]",
+    # Version catalog alias: agp = "8.5.2"
     r"agp\s*=\s*['\"]([^'\"]+)['\"]",
+    # Version catalog TOML: com-android-application = { version = "8.5.2" }
     r"com-android-application\s*=\s*\{[^}]*version\s*=\s*['\"]([^'\"]+)['\"]",
 ]
 

@@ -55,11 +55,15 @@ def read_file(path: Path) -> str:
 
 def parse_agp_version(content: str) -> str | None:
     """Extract AGP version from a Kotlin/Groovy build file."""
-    # Kotlin DSL: id("com.android.application") version "8.5.2"
-    m = re.search(r'com\.android\.application["\s\)]+\S*version\s*["\']([^"\']+)["\']', content)
+    # Modern Kotlin DSL: id("com.android.application") version "8.5.2"
+    m = re.search(r'id\s*\(\s*["\']com\.android\.application["\']\s*\)\s*version\s*["\']([^"\']+)["\']', content)
     if m:
         return m.group(1).strip()
-    # Groovy: classpath 'com.android.tools.build:gradle:8.5.2'
+    # Modern Kotlin DSL (no parens): id "com.android.application" version "8.5.2"
+    m = re.search(r'id\s+["\']com\.android\.application["\'].*?version\s*["\']([^"\']+)["\']', content)
+    if m:
+        return m.group(1).strip()
+    # Old Groovy: classpath 'com.android.tools.build:gradle:8.5.2'
     m = re.search(r"com\.android\.tools\.build:gradle:([^'\"\s]+)", content)
     if m:
         return m.group(1).strip()
