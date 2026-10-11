@@ -396,7 +396,20 @@ jobs:
         if: always() && steps.collect.outputs.apk_count != '0' && steps.collect.outputs.apk_count != ''
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          # The Docker image doesn't ship `gh` (GitHub CLI) — install it
+          # at runtime so we can create releases + upload assets via the
+          # official tool. ~5 seconds, ~25 MB.
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "Installing GitHub CLI..."
+            curl -fsSL https://cli.github.com/packages/githubcli-archive.key \
+              | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null || true
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+              > /etc/apt/sources.list.d/github-cli.list
+            apt-get update -qq && apt-get install -y -qq gh
+          fi
+          gh --version
           TAG="web-build-output-${{ github.run_id }}"
           echo "Creating release with tag $TAG…"
           gh release create "$TAG" \

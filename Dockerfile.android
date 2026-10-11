@@ -46,6 +46,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------------------------------
+# 1b. GitHub CLI (gh) — used by build-android.yml to publish APKs to a
+#     release tagged web-build-output-<run_id>. Without gh, the publish
+#     step would fail with "gh: not found" inside the container.
+# -----------------------------------------------------------------------------
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive.key \
+      | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null || true \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update -qq \
+    && apt-get install -y -qq gh \
+    && rm -rf /var/lib/apt/lists/* \
+    && gh --version
+
+# -----------------------------------------------------------------------------
 # 2. JDKs — install all three so the workflow can switch JAVA_HOME without
 #    needing actions/setup-java (which re-downloads ~200 MB every build).
 #    Default JAVA_HOME points to JDK 17 (the AGP 8.x requirement).
