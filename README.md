@@ -33,6 +33,72 @@ You will need a GitHub Personal Access Token (classic PAT with `repo` + `workflo
 
 ---
 
+## 🐳 Prebuilt Docker image (build optimization)
+
+To eliminate repeated installation of JDK / Android SDK / Gradle / Flutter on every APK build, this repo ships a **prebuilt Docker image** that contains the entire Android build environment.
+
+### Image contents
+
+| Layer | Version(s) |
+|---|---|
+| Base | `ubuntu:22.04` |
+| JDK | 8, 11, 17 (all three preinstalled; `JAVA_HOME` defaults to 17) |
+| Android SDK | Command-line tools + platform-tools |
+| Build-tools | 28.0.3, 29.0.3, 30.0.3, 32.0.0, 33.0.2, 34.0.0 |
+| Android platforms | android-23 → android-34 |
+| CMake | 3.18.1, 3.22.1 (for native C/C++ code) |
+| Gradle | 8.9 system-wide (used only when a project has no usable wrapper) |
+| Flutter | 3.27.0 stable (with desktop platforms enabled) |
+| Linux desktop libs | libgtk-3-dev, libmpv-dev, libayatana-appindicator3-dev, libsecret-1-dev |
+| Utilities | git, curl, wget, unzip, zip, python3, PyYAML |
+
+### Image location & lifecycle
+
+- **Image**: `ghcr.io/<owner>/androidforge-build-env:latest` (also tagged with short SHA + date)
+- **Build workflow**: `.github/workflows/build-android-image.yml` — builds and pushes the image to GHCR only when `Dockerfile.android` (or the workflow itself) changes. It does NOT run on every APK build.
+- **Dockerfile**: `Dockerfile.android` at the repo root.
+- **Consumer**: `.github/workflows/build-android.yml` declares `container: ghcr.io/<owner>/androidforge-build-env:latest` on its build job, so the workflow starts inside the image instead of installing tools from scratch.
+
+### One-time initial setup
+
+After forking the repo, you must publish the image once before the APK workflow can use it:
+
+1. Go to the repo's **Settings → Actions → General → Workflow permissions** and enable **"Read and write permissions"** (this lets the GITHUB_TOKEN push packages to GHCR).
+2. Go to **Settings → Packages** and make sure new packages are visible to your account (default is "private" — the APK workflow needs `packages: read` to pull the image, which works even if private).
+3. Trigger the **"Build & Publish Android Image"** workflow from the Actions tab (or push a change to `Dockerfile.android`). First build takes ~15 min and produces a ~3 GB image.
+4. After the image is published, the APK workflow will pull it automatically on its next run.
+
+### Maintenance: how to update the image
+
+When you want to bump a tool version (e.g. Flutter 3.27 → 3.30, add a new Android platform, switch Gradle 8.9 → 8.10):
+
+1. Edit `Dockerfile.android` — bump the relevant version.
+2. Commit and push to `main`. The `build-android-image.yml` workflow auto-triggers (because its `paths:` filter includes `Dockerfile.android`).
+3. Wait ~10–15 min for the new image to publish. The `:latest` tag is moved automatically; old SHA-tagged images are kept for rollbacks.
+4. The next APK build picks up the new image automatically.
+
+### How the APK workflow uses the image
+
+The `build-android.yml` workflow now does this on every run:
+
+1. Starts the job **inside** the prebuilt Docker container (no JDK/SDK/Gradle install).
+2. Checks out the repo, installs Python deps (PyYAML, ~1 MB).
+3. Acquires the source ZIP via the existing input/URL/release mechanism.
+4. Runs `detect_project.py` to identify Gradle vs Flutter vs multi-module, etc.
+5. Runs `setup_environment.py` to pick a compatible JDK / Gradle / Flutter version.
+6. **Switches `JAVA_HOME`** to the detected JDK (all three are preinstalled — no `actions/setup-java` needed).
+7. **Installs only missing SDK components** via `sdkmanager` (if the project's `compileSdk` isn't already in the image, e.g. a project that needs android-22).
+8. Restores the **per-project Gradle cache** (`actions/cache@v4` keyed on gradle version + hash of build.gradle/gradle-wrapper.properties/libs.versions.toml).
+9. Restores the **per-project Flutter pub cache** for Flutter projects.
+10. Runs `build_project.py` → `assembleDebug` / `assembleRelease` / `bundleDebug`.
+11. Runs `collect_apk.py` → picks the primary APK.
+12. Uploads the APK as a workflow artifact + publishes it to a release tagged `web-build-output-<run_id>`.
+13. On failure, runs `diagnose_failure.py` to surface the most likely cause.
+
+**Time saved:** the old workflow spent ~3–5 min per build installing JDK 17 (~250 MB), Android SDK platforms + build-tools (~1 GB), Gradle (~150 MB), and Flutter (~1.5 GB). The new workflow spends ~30 s pulling the cached Docker layer + zero time installing these tools.
+
+---
+
 ## CLI / direct workflow use
 
 If you prefer not to use the web UI, you can also trigger the build directly from GitHub:

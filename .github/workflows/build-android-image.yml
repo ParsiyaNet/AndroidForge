@@ -1,0 +1,121 @@
+name: Build & Publish Android Image
+
+# =============================================================================
+# AndroidForge — Docker image build & publish to GitHub Container Registry.
+#
+# This workflow builds Dockerfile.android and pushes the resulting image to:
+#   ghcr.io/<owner>/androidforge-build-env
+#
+# When it runs:
+#   • On push to main when Dockerfile.android, .dockerignore, or this
+#     workflow file itself changes.
+#   • On manual workflow_dispatch.
+#   • NOT on every APK build (the APK workflow consumes the image as-is).
+#
+# The image is published as:
+#   ghcr.io/<owner>/androidforge-build-env:latest
+#   ghcr.io/<owner>/androidforge-build-env:<short-sha>
+#   ghcr.io/<owner>/androidforge-build-env:YYYYMMDD-<short-sha>
+#
+# First-run setup:
+#   1. Make sure GitHub repo Settings → Actions → General → Workflow
+#      permissions has "Read and write permissions" enabled (or use the
+#      default GITHUB_TOKEN with packages: write — set in this workflow).
+#   2. Trigger this workflow manually from the Actions tab. The first
+#      build takes ~15 min and pushes a ~3 GB image to GHCR.
+#   3. After this completes, the build-android.yml workflow can pull
+#      the image via container: ghcr.io/<owner>/androidforge-build-env:latest
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile.android"
+      - ".dockerignore"
+      - ".github/workflows/build-android-image.yml"
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Force rebuild even if no files changed"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+  # actions: read and id-token: write are needed for attestation but optional.
+  actions: read
+
+concurrency:
+  group: androidforge-image-build
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: androidforge-build-env
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-publish:
+    name: Build & publish to GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image name & tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          # Lowercase owner (some org names contain caps which break GHCR URLs)
+          # docker/metadata-action auto-lowercases the image reference.
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short,prefix=sha-,enable=true
+            type=raw,value={{date 'YYYYMMDD'}}-{{sha}}
+            type=raw,value={{date 'YYYYMMDD-HHmmss'}}
+
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.android
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=AndroidForge build environment
+            org.opencontainers.image.description=Prebuilt Android + Flutter + Gradle + JDK + Android SDK image for AndroidForge's APK workflow.
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          # Use GitHub Actions cache backend so subsequent rebuilds are
+          # faster (Docker layer cache is stored inside GH Actions cache).
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## 🐳 Android build image published
+
+          Image: \`${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest\`
+
+          Tags pushed:
+          \`\`\`
+          $(echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n')
+          \`\`\`
+
+          The \`build-android.yml\` workflow will pull this image automatically
+          on its next run via its \`container:\` field.
+          EOF

@@ -1,0 +1,20 @@
+# Files we don't want copied into the build context when building the
+# Android build-env image. Keeping the context small = faster image builds.
+.github/
+.git/
+.gitignore
+.androidforge/
+output/
+input/
+*.zip
+*.apk
+*.aab
+*.log
+docs/
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+worklog.md

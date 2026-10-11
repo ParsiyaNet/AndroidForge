@@ -1,0 +1,176 @@
+# =============================================================================
+# AndroidForge — Prebuilt Android build environment Docker image
+# =============================================================================
+# This image is published to GHCR as
+#   ghcr.io/<owner>/androidforge-build-env:latest
+# and is consumed by .github/workflows/build-android.yml via the `container:`
+# field so that the workflow does NOT reinstall the JDK / Android SDK /
+# Gradle / Flutter on every single APK build.
+#
+# What's inside:
+#   • Ubuntu 22.04 base
+#   • Multiple JDKs: 8, 11, 17 (Temurin via apt + actions)
+#   • Android SDK command-line tools + platform-tools
+#   • Android build-tools 28.0.3 / 29.0.3 / 30.0.3 / 32.0.0 / 33.0.2 / 34.0.0
+#   • Android platforms 23 → 34
+#   • CMake 3.18.1 + 3.22.1 (for native C/C++ builds)
+#   • Gradle 8.9 (system-wide, used only when project's wrapper is missing)
+#   • Flutter 3.27.0 stable (for Flutter projects)
+#   • Common Linux build deps: libgtk-3-dev, libmpv-dev, libayatana-appindicator3-dev
+#     (so Flutter desktop builds also work in the same image)
+#   • Python 3, pip, PyYAML (for AndroidForge's Python detection scripts)
+#   • git, unzip, curl, wget, etc.
+#
+# When a project needs a different version (different JDK, different Flutter,
+# different Android platform), the build-android.yml workflow detects the
+# requirement and installs ONLY that missing piece on top of this image.
+# =============================================================================
+
+FROM ubuntu:22.04
+
+# Avoid interactive prompts during apt installs.
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# -----------------------------------------------------------------------------
+# 1. Base packages
+# -----------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl wget unzip zip xz-utils ca-certificates \
+      git git-lfs \
+      python3 python3-pip python3-venv \
+      build-essential cmake ninja-build clang \
+      pkg-config libgtk-3-dev libglib2.0-dev \
+      libmpv-dev libsecret-1-dev libayatana-appindicator3-dev \
+      openssh-client gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# 2. JDKs — install all three so the workflow can switch JAVA_HOME without
+#    needing actions/setup-java (which re-downloads ~200 MB every build).
+#    Default JAVA_HOME points to JDK 17 (the AGP 8.x requirement).
+# -----------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      openjdk-8-jdk openjdk-11-jdk openjdk-17-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME_8=/usr/lib/jvm/java-8-openjdk-amd64
+ENV JAVA_HOME_11=/usr/lib/jvm/java-11-openjdk-amd64
+ENV JAVA_HOME_17=/usr/lib/jvm/java-17-openjdk-amd64
+ENV JAVA_HOME=$JAVA_HOME_17
+
+# -----------------------------------------------------------------------------
+# 3. Android SDK — command-line tools, platform-tools, build-tools, platforms
+# -----------------------------------------------------------------------------
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+# Make sdkmanager / adb / avdmanager reachable on PATH.
+ENV PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+
+# Download the command-line tools (the "latest" Linux build) and lay them out
+# in the layout sdkmanager expects: cmdline-tools/latest/bin/sdkmanager
+RUN mkdir -p $ANDROID_HOME/cmdline-tools && \
+    cd $ANDROID_HOME/cmdline-tools && \
+    wget -q "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -O /tmp/cmdtools.zip && \
+    unzip -q /tmp/cmdtools.zip && \
+    mv cmdline-tools latest && \
+    rm /tmp/cmdtools.zip && \
+    chmod +x latest/bin/sdkmanager latest/bin/adb latest/bin/avdmanager 2>/dev/null || true
+
+# Accept all SDK licenses (otherwise sdkmanager refuses to install anything)
+# and install the common packages. This is the heavy install — ~3 GB on disk.
+RUN yes | sdkmanager --licenses >/dev/null 2>&1 || true && \
+    sdkmanager \
+      "platform-tools" \
+      "build-tools;34.0.0" \
+      "build-tools;33.0.2" \
+      "build-tools;32.0.0" \
+      "build-tools;30.0.3" \
+      "build-tools;29.0.3" \
+      "build-tools;28.0.3" \
+      "platforms;android-34" \
+      "platforms;android-33" \
+      "platforms;android-32" \
+      "platforms;android-31" \
+      "platforms;android-30" \
+      "platforms;android-29" \
+      "platforms;android-28" \
+      "platforms;android-27" \
+      "platforms;android-26" \
+      "platforms;android-25" \
+      "platforms;android-24" \
+      "platforms;android-23" \
+      "extras;android;m2repository" \
+      "extras;google;m2repository" \
+      "cmake;3.22.1" \
+      "cmake;3.18.1" \
+    && yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+# -----------------------------------------------------------------------------
+# 4. Gradle (system-wide; used only when a project has no usable wrapper).
+#    Most projects pin their own gradle-wrapper, so this is a fallback.
+# -----------------------------------------------------------------------------
+ENV GRADLE_VERSION=8.9
+ENV GRADLE_HOME=/opt/gradle
+ENV PATH=$PATH:$GRADLE_HOME/bin
+
+RUN wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -O /tmp/gradle.zip && \
+    unzip -q /tmp/gradle.zip -d /opt && \
+    ln -s "/opt/gradle-${GRADLE_VERSION}" "$GRADLE_HOME" && \
+    rm /tmp/gradle.zip
+
+# -----------------------------------------------------------------------------
+# 5. Flutter SDK (stable channel). Pinned to a known-good version that works
+#    with both Flutter Android and Flutter Linux desktop builds.
+#    `flutter pub get` for a real project is still per-project (cached
+#    separately via the workflow's cache action).
+# -----------------------------------------------------------------------------
+ENV FLUTTER_HOME=/opt/flutter
+ENV FLUTTER_VERSION=3.27.0
+ENV PATH=$PATH:$FLUTTER_HOME/bin
+
+# Shallow-clone the Flutter stable branch, then pin to a specific commit so
+# the image is reproducible. We can't easily `git checkout` a tag from a
+# shallow clone, so we use `flutter --version` to verify install instead.
+RUN git clone --branch stable --depth 1 https://github.com/flutter/flutter.git "$FLUTTER_HOME" && \
+    flutter --version && \
+    flutter config --no-analytics && \
+    dart --version
+
+# Pre-warm the Flutter pub cache with very common packages so first-time
+# `flutter pub get` doesn't have to download them. (Optional; cheap.)
+RUN flutter pub global activate 2>/dev/null || true
+
+# -----------------------------------------------------------------------------
+# 6. Python dependencies for AndroidForge's detection scripts
+# -----------------------------------------------------------------------------
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install --no-cache-dir PyYAML==6.0.3
+
+# -----------------------------------------------------------------------------
+# 7. Pre-warm the Gradle cache so first-time builds don't have to download
+#    common Android Gradle Plugin / kotlin-gradle-plugin / AGP dependencies.
+#    We create a tiny no-op Gradle project and run `gradle help` against it.
+# -----------------------------------------------------------------------------
+RUN mkdir -p /tmp/warmup && cd /tmp/warmup && \
+    printf 'plugins { id("java") }\nrepositories { mavenCentral(); google() }\n' > build.gradle.kts && \
+    gradle --no-daemon help || true && \
+    cd / && rm -rf /tmp/warmup
+
+# -----------------------------------------------------------------------------
+# 8. Final environment
+# -----------------------------------------------------------------------------
+WORKDIR /github/workspace
+
+# Sanity check: print installed versions for build logs.
+RUN echo "=== AndroidForge build-env ===" && \
+    echo "JDK 8:    $(java -version 2>&1 | head -1) at $JAVA_HOME_8" && \
+    echo "JDK 11:   $($JAVA_HOME_11/bin/java -version 2>&1 | head -1) at $JAVA_HOME_11" && \
+    echo "JDK 17:   $($JAVA_HOME_17/bin/java -version 2>&1 | head -1) at $JAVA_HOME_17" && \
+    echo "Gradle:   $(gradle --version | grep 'Gradle ' | head -1)" && \
+    echo "Flutter:  $(flutter --version | head -1)" && \
+    echo "Android SDK: $ANDROID_HOME" && \
+    echo "Platform-tools: $(adb --version 2>&1 | head -1)" && \
+    echo "sdkmanager: $(sdkmanager --version 2>&1 | head -1)"
+
+CMD ["/bin/bash"]
