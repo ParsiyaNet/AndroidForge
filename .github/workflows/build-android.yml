@@ -21,6 +21,12 @@ name: Build Android APK
 #  11. On failure, run automated diagnosis
 
 on:
+  # Temporary one-file push trigger for the managed WAPFire rebuild.
+  # This will be removed after the APK workflow has started.
+  push:
+    branches: [main]
+    paths:
+      - "input/web-build-1793696269001-WAPFire-Mobile-AndroidStudio.zip"
   workflow_dispatch:
     inputs:
       zip_source:
@@ -62,14 +68,9 @@ on:
         type: boolean
         required: false
         default: false
-  # NOTE: We intentionally do NOT have a `push.paths: input/**.zip`
-  # trigger. The Pages UI commits the ZIP to input/ AND triggers
-  # workflow_dispatch — if both triggers were active, every UI build
-  # would fire TWO workflow runs (one from the push, one from the
-  # dispatch). Removing the push trigger means only workflow_dispatch
-  # fires, so users get exactly one build per click.
-  # If you want to build via git push, trigger the workflow manually
-  # from the Actions tab after pushing.
+  # The one-file push trigger above is temporary and is removed after
+  # the managed WAPFire build starts. Normal web-UI uploads continue to use
+  # workflow_dispatch only, avoiding duplicate runs.
 
 # Never expose secrets to the (untrusted) uploaded source ZIP.
 # contents:write is required so the GITHUB_TOKEN can upload the built APK
