@@ -1,0 +1,20 @@
+name: Temporary WAPFire layout inspection
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/wapfire_ui_repair.py"
+      - ".github/workflows/wapfire-ui-repair.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect current 4.1.50 source
+        run: python3 scripts/wapfire_ui_repair.py --inspect
