@@ -1,4 +1,4 @@
-name: Export WAPFire 4.1.50 source for UI refinement
+name: Export WAPFire 4.1.50 source and reference screenshots
 
 on:
   push:
@@ -20,11 +20,15 @@ jobs:
         run: |
           test -s "input/web-build-1794143587783-WAPFire-Mobile-4.1.50-Assistant-Navigation-Polish-Source.zip"
           unzip -t "input/web-build-1794143587783-WAPFire-Mobile-4.1.50-Assistant-Navigation-Polish-Source.zip"
-      - name: Upload source archive
+      - name: Upload source and screenshots
         uses: actions/upload-artifact@v4
         with:
-          name: WAPFire-4.1.50-Navigation-Polish-Source
-          path: input/web-build-1794143587783-WAPFire-Mobile-4.1.50-Assistant-Navigation-Polish-Source.zip
+          name: WAPFire-4.1.50-Reference-Bundle
+          path: |
+            input/web-build-1794143587783-WAPFire-Mobile-4.1.50-Assistant-Navigation-Polish-Source.zip
+            Screenshot_20261108-160538_WAPFire Mobile.jpg
+            Screenshot_20261108-160651_WAPFire Mobile.jpg
+            Screenshot_20261108-165144_WAPFire Mobile.jpg
           if-no-files-found: error
           retention-days: 2
           compression-level: 0
