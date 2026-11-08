@@ -1,0 +1,30 @@
+name: Export WAPFire 4.1.50 source for UI refinement
+
+on:
+  push:
+    branches:
+      - fix/wapfire-4-1-50-character-nav-layout
+    paths:
+      - .github/workflows/export-wapfire-source.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Verify source archive
+        run: |
+          test -s "input/web-build-1794143587783-WAPFire-Mobile-4.1.50-Assistant-Navigation-Polish-Source.zip"
+          unzip -t "input/web-build-1794143587783-WAPFire-Mobile-4.1.50-Assistant-Navigation-Polish-Source.zip"
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: WAPFire-4.1.50-Navigation-Polish-Source
+          path: input/web-build-1794143587783-WAPFire-Mobile-4.1.50-Assistant-Navigation-Polish-Source.zip
+          if-no-files-found: error
+          retention-days: 2
+          compression-level: 0
