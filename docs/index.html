@@ -657,6 +657,37 @@
         }
         appendLog(`  ✓ ${commitPath} committed`);
 
+        // GitHub can briefly serve the previous branch snapshot to Actions
+        // immediately after the ref update. Verify that the exact ZIP blob is
+        // visible from the branch before dispatching a workflow that receives
+        // this path. This prevents "explicit --path not found" on stale SHAs.
+        appendLog("→ Verifying uploaded ZIP on the default branch…");
+        els.uploadStatus.textContent = "verifying uploaded ZIP…";
+        const encodedCommitPath = commitPath.split("/").map(encodeURIComponent).join("/");
+        let zipVisibleOnBranch = false;
+        let zipVerifyError = "";
+        for (let attempt = 0; attempt < 12; attempt++) {
+          try {
+            const visibleZip = await apiJson(
+              `/repos/${c.owner}/${c.repo}/contents/${encodedCommitPath}?ref=${encodeURIComponent(repoInfo.default_branch)}`
+            );
+            if (visibleZip.sha === blobSha) {
+              zipVisibleOnBranch = true;
+              break;
+            }
+            zipVerifyError = `GitHub returned an unexpected blob SHA: ${visibleZip.sha || "missing"}`;
+          } catch (e) {
+            zipVerifyError = e?.message || String(e);
+          }
+          if (attempt < 11) await sleep(1000);
+        }
+        if (!zipVisibleOnBranch) {
+          throw new Error(
+            `Uploaded ZIP is not visible on ${repoInfo.default_branch}; workflow was not dispatched. ${zipVerifyError}`
+          );
+        }
+        appendLog(`  ✓ Verified exact ZIP blob on ${repoInfo.default_branch}`);
+
         // 4. Trigger workflow_dispatch with zip_source=input-directory
         //    AND the exact zip_path we just committed. Without zip_path,
         //    acquire_zip.py auto-detects the FIRST .zip in input/ — which
