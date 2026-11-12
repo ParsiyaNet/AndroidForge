@@ -331,12 +331,14 @@ def _inject_repositories(root: Path, applied: list[str], is_flutter: bool) -> No
     REPO_LINES_KTS = [
         'maven { url = uri("https://maven.google.com") }',
         'mavenCentral()',
+        'maven { url = uri("https://repo1.maven.org/maven2") }',
         'maven { url = uri("https://plugins.gradle.org/m2") }',
         'maven { url = uri("https://jitpack.io") }',
     ]
     REPO_LINES_GROOVY = [
         'maven { url \'https://maven.google.com\' }',
         'mavenCentral()',
+        'maven { url \'https://repo1.maven.org/maven2\' }',
         'maven { url \'https://plugins.gradle.org/m2\' }',
         'maven { url \'https://jitpack.io\' }',
     ]
@@ -345,14 +347,10 @@ def _inject_repositories(root: Path, applied: list[str], is_flutter: bool) -> No
         if not grad.exists():
             continue
         content = grad.read_text(encoding="utf-8", errors="replace")
-        # Skip if all repos are already declared anywhere in the file.
-        already_has = (
-            "jitpack.io" in content
-            and "maven.google.com" in content
-            and "mavenCentral()" in content
-        )
-        if already_has:
-            continue
+        # Do not short-circuit based on repositories elsewhere in this file.
+        # settings.gradle(.kts) may have separate pluginManagement and
+        # dependencyResolutionManagement repositories. Each block must be
+        # checked and completed independently below.
         # Try to find a `repositories { ... }` block and append our repos
         # just before its closing brace.
         is_kts = grad.name.endswith(".kts")
@@ -384,7 +382,7 @@ def _inject_repositories(root: Path, applied: list[str], is_flutter: bool) -> No
             # Check which repos are missing from THIS block.
             block_content = new_content[start:close_idx]
             missing = []
-            for line, marker in zip(repo_lines, ["maven.google.com", "mavenCentral()", "plugins.gradle.org", "jitpack.io"]):
+            for line, marker in zip(repo_lines, ["maven.google.com", "mavenCentral()", "repo1.maven.org", "plugins.gradle.org", "jitpack.io"]):
                 if marker not in block_content:
                     missing.append(line)
             if not missing:
@@ -409,6 +407,53 @@ def _inject_repositories(root: Path, applied: list[str], is_flutter: bool) -> No
         if injected and new_content != content:
             grad.write_text(new_content)
             applied.append(f"Injected JitPack/Google/mavenCentral into {grad.relative_to(root) if grad.is_relative_to(root) else grad}")
+
+    # Plugin IDs declared with the plugins {} DSL are resolved through
+    # pluginManagement.repositories, which is separate from ordinary
+    # dependencyResolutionManagement.repositories. Ensure the plugin scope
+    # has Maven Central as well as the Gradle Plugin Portal. This matters for
+    # transitive plugin POM dependencies (for example Kotlin's BOM).
+    for sf in settings_files:
+        if not sf.exists():
+            continue
+        content = sf.read_text(encoding="utf-8", errors="replace")
+        is_kts = sf.name.endswith(".kts")
+        repo_lines = REPO_LINES_KTS if is_kts else REPO_LINES_GROOVY
+        plugin_match = re.search(r"\bpluginManagement\s*\{", content)
+        if not plugin_match:
+            repo_block = "\n".join("        " + line for line in repo_lines)
+            new_block = (
+                "pluginManagement {\n"
+                "    repositories {\n" + repo_block + "\n"
+                "    }\n"
+                "}\n\n"
+            )
+            sf.write_text(new_block + content, encoding="utf-8")
+            applied.append(f"Added pluginManagement repositories to {sf.relative_to(root)}")
+            continue
+
+        # Find the end of pluginManagement without confusing nested blocks.
+        start = plugin_match.end()
+        depth = 1
+        i = start
+        while i < len(content) and depth > 0:
+            if content[i] == "{":
+                depth += 1
+            elif content[i] == "}":
+                depth -= 1
+            i += 1
+        if depth != 0:
+            continue
+        close_idx = i - 1
+        plugin_body = content[start:close_idx]
+        if re.search(r"\brepositories\s*\{", plugin_body, re.IGNORECASE):
+            # Existing block was handled by the per-block injector above.
+            continue
+
+        repo_block = "\n".join("        " + line for line in repo_lines)
+        addition = "\n    repositories {\n" + repo_block + "\n    }\n"
+        sf.write_text(content[:close_idx] + addition + content[close_idx:], encoding="utf-8")
+        applied.append(f"Added pluginManagement.repositories to {sf.relative_to(root)}")
 
 
 def main() -> int:
