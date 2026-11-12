@@ -21,6 +21,16 @@ name: Build Android APK
 #  11. On failure, run automated diagnosis
 
 on:
+  # Regression-build the newest source ZIP when AndroidForge's build engine changes.
+  # Input ZIP commits are excluded to avoid duplicate Pages workflow_dispatch runs.
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/setup_environment.py"
+      - "scripts/build_project.py"
+      - "scripts/acquire_zip.py"
+      - ".github/workflows/build-android.yml"
   workflow_dispatch:
     inputs:
       zip_source:
@@ -319,6 +329,34 @@ jobs:
               echo "✓ Image's Gradle 8.9 satisfies the project's requirement of $GRADLE_VER+"
             fi
           fi
+
+      # ---------------------------------------------------------------------
+      # Step 10b: Probe Maven endpoints before Gradle. Diagnostic only:
+      # record HTTP reachability and let Gradle's resolver decide.
+      # ---------------------------------------------------------------------
+      - name: Probe Maven repository endpoints
+        if: steps.toolchain.outputs.needs_gradle == 'true'
+        shell: bash
+        run: |
+          set +e
+          probe() {
+            name="$1"
+            url="$2"
+            status="$(curl --location --silent --show-error --output /dev/null \
+              --write-out '%{http_code}' --connect-timeout 10 --max-time 35 \
+              --retry 2 --retry-all-errors --retry-delay 2 "$url" 2>/tmp/androidforge-curl.err)"
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "$name: HTTP $status"
+            else
+              detail="$(tr '\n' ' ' </tmp/androidforge-curl.err)"
+              echo "$name: REQUEST FAILED (curl exit $rc; $detail)"
+            fi
+          }
+          probe "Maven Central" "https://repo.maven.apache.org/maven2/org/bouncycastle/bcpkix-jdk18on/1.77/bcpkix-jdk18on-1.77.pom"
+          probe "Maven Central mirror" "https://repo1.maven.org/maven2/org/bouncycastle/bcpkix-jdk18on/1.77/bcpkix-jdk18on-1.77.pom"
+          probe "Gradle Plugin Portal" "https://plugins.gradle.org/m2/org/jetbrains/kotlin/kotlin-gradle-plugin/2.3.0/kotlin-gradle-plugin-2.3.0.pom"
+          probe "Google Maven" "https://dl.google.com/dl/android/maven2/com/android/tools/build/gradle/8.7.3/gradle-8.7.3.pom"
 
       # ---------------------------------------------------------------------
       # Step 11: Build the project (writes build.json)
