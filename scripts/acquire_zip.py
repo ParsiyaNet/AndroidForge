@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 import urllib.error
@@ -35,10 +36,20 @@ INPUT_DIR = REPO_ROOT / "input"
 def find_input_zip() -> Path | None:
     if not INPUT_DIR.exists():
         return None
-    for p in INPUT_DIR.iterdir():
-        if p.is_file() and p.suffix.lower() == ".zip":
-            return p
-    return None
+    candidates = [p for p in INPUT_DIR.iterdir()
+                  if p.is_file() and p.suffix.lower() == ".zip"]
+    if not candidates:
+        return None
+
+    # AndroidForge web uploads are named web-build-<unix-ms>-<filename>.zip.
+    # When several builds are retained under input/, always choose the newest
+    # upload instead of depending on filesystem iteration order.
+    def sort_key(path: Path) -> tuple[int, int, str]:
+        match = re.search(r"web-build-(\d+)-", path.name)
+        upload_time = int(match.group(1)) if match else 0
+        return (upload_time, path.stat().st_mtime_ns, path.name)
+
+    return max(candidates, key=sort_key)
 
 
 def download(url: str, dest: Path) -> None:
