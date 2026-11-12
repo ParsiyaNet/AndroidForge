@@ -146,6 +146,16 @@ jobs:
             --tag "${{ inputs.release_tag }}" \
             --path "${{ inputs.zip_path }}"
 
+      # Temporary source snapshot for targeted VRM performance optimization.
+      - name: Preserve source ZIP for optimization
+        uses: actions/upload-artifact@v4
+        with:
+          name: WAPFire-4.3.2-source-inspection
+          path: ${{ steps.acquire.outputs.zip_path }}
+          if-no-files-found: error
+          retention-days: 2
+          compression-level: 0
+
       # ---------------------------------------------------------------------
       # Step 2: Extract ZIP
       # ---------------------------------------------------------------------
