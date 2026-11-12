@@ -29,6 +29,32 @@ from pathlib import Path
 from typing import Any
 
 
+def is_dependency_fetch_failure(log_path: str) -> bool:
+    """Recognize Gradle repository/network failures worth retrying."""
+    try:
+        content = Path(log_path).read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        return False
+    markers = (
+        "could not resolve all artifacts",
+        "could not resolve ",
+        "could not find ",
+        "could not parse pom",
+        "could not get resource",
+        "could not get ",
+        "could not head ",
+        "unknownhostexception",
+        "temporary failure in name resolution",
+        "connection reset",
+        "connection timed out",
+        "read timed out",
+        "too many requests",
+        "service unavailable",
+        "status code 5",
+    )
+    return any(marker in content for marker in markers)
+
+
 def run(cmd: list[str], cwd: Path, log_file: Path, env: dict[str, str] | None = None) -> tuple[int, str]:
     """Run a command, stream stdout/stderr to console AND a log file."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -182,12 +208,30 @@ def main() -> int:
                 # This makes the build resilient to filesystems that
                 # silently drop the exec bit.
                 cmd = ["/bin/sh", str(gradlew_path)] + cmd[1:]
-        rc, log = run(cmd, root, log_dir / f"build-{int(time.time())}-{len(cmd)}.log", build_env)
-        last_rc = rc
-        last_log = log
-        if rc == 0:
-            success = True
-            successful_command = cmd
+        # Gradle may receive transient Maven/Plugin Portal failures. Retry only
+        # repository-resolution failures, refreshing metadata on each retry so
+        # cached "not found" responses do not poison the next attempt.
+        for attempt in range(1, 4):
+            exec_cmd = cmd if attempt == 1 else cmd + ["--refresh-dependencies"]
+            log_file = log_dir / f"build-{int(time.time())}-{len(cmd)}-attempt-{attempt}.log"
+            rc, log = run(exec_cmd, root, log_file, build_env)
+            last_rc = rc
+            last_log = log
+            if rc == 0:
+                success = True
+                successful_command = exec_cmd
+                break
+            if attempt < 3 and is_dependency_fetch_failure(log):
+                wait_seconds = 4 * attempt
+                print(
+                    f"⚠ Gradle dependency/repository failure; retrying in {wait_seconds}s "
+                    f"with --refresh-dependencies (attempt {attempt + 1}/3).",
+                    flush=True,
+                )
+                time.sleep(wait_seconds)
+                continue
+            break
+        if success:
             break
 
     # Output JSON summary
@@ -200,6 +244,7 @@ def main() -> int:
         "log_file": last_log,
         "prep_commands_run": prep_commands,
         "build_commands_attempted": all_commands,
+        "dependency_retry_policy": "up to 2 retries for dependency/repository resolution failures",
     }
     output = json.dumps(result, indent=2)
     if args.output:
