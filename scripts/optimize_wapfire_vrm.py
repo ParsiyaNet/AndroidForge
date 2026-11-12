@@ -20,6 +20,19 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def has_native_adaptive_renderer(js: Path) -> bool:
+    """Return True when a newer WAPFire renderer already has adaptive frame pacing."""
+    source = js.read_text(encoding="utf-8")
+    markers = (
+        "let lastRender = 0;",
+        "const perf = { frames: 0, acc: 0, checked: 0 };",
+        "if (nowMs - lastRender < 14) return;",
+        "pixelRatio = Math.max(1, pixelRatio - 0.5);",
+        "renderer.setAnimationLoop(tick);",
+    )
+    return all(marker in source for marker in markers)
+
+
 def patch(root: Path) -> None:
     js = root / "app/src/main/assets/assistant/vrm/vrm.js"
     old_renderer = """const canvas = $('stage');
@@ -172,6 +185,12 @@ def main() -> int:
     js = root / "app/src/main/assets/assistant/vrm/vrm.js"
     if not js.is_file():
         raise RuntimeError(f"Not a WAPFire VRM project: {root}")
+    if has_native_adaptive_renderer(js):
+        print(
+            "Detected a newer WAPFire VRM renderer with built-in frame pacing "
+            "and adaptive resolution; skipping the legacy 4.3.3 patch."
+        )
+        return 0
     patch(root)
 
     source = js.read_text(encoding="utf-8")
