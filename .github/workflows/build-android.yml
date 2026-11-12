@@ -30,6 +30,7 @@ on:
       - "scripts/setup_environment.py"
       - "scripts/build_project.py"
       - "scripts/acquire_zip.py"
+      - "scripts/optimize_wapfire_vrm.py"
       - ".github/workflows/build-android.yml"
   workflow_dispatch:
     inputs:
@@ -162,6 +163,33 @@ jobs:
       - name: Extract source ZIP
         id: extract
         run: python3 scripts/extract_zip.py --zip "${{ steps.acquire.outputs.zip_path }}"
+
+      # Apply the WAPFire-only mobile VRM performance patch when this source tree
+      # contains the VRM renderer. All unrelated Android projects pass through.
+      - name: Optimize WAPFire VRM renderer
+        id: vrm_optimize
+        shell: bash
+        run: |
+          echo "optimized=false" >> "$GITHUB_OUTPUT"
+          PROJECT_ROOT="${{ steps.extract.outputs.project_root }}"
+          if [ -f "$PROJECT_ROOT/app/src/main/assets/assistant/vrm/vrm.js" ]; then
+            mkdir -p "$GITHUB_WORKSPACE/.androidforge/optimized-source"
+            python3 scripts/optimize_wapfire_vrm.py \
+              --root "$PROJECT_ROOT" \
+              --output-zip "$GITHUB_WORKSPACE/.androidforge/optimized-source/WAPFire-Mobile-4.3.3-VRM-Performance-Source.zip"
+          else
+            echo "No WAPFire VRM renderer found; skipping project-specific optimization."
+          fi
+
+      - name: Upload optimized WAPFire source ZIP
+        if: steps.vrm_optimize.outputs.optimized == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: WAPFire-Mobile-4.3.3-VRM-Performance-Source
+          path: ${{ steps.vrm_optimize.outputs.source_zip }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
 
       # ---------------------------------------------------------------------
       # Step 3: Detect project (writes detection.json)
