@@ -30,11 +30,12 @@ canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); if (!re
     new_renderer = """/* Adaptive quality: preserve full quality on capable phones and reduce GPU load on older ones. */
 const deviceMemoryGB = Number(navigator.deviceMemory) || 0;
 const cpuCores = Number(navigator.hardwareConcurrency) || 0;
-const lowEndDevice = (deviceMemoryGB > 0 && deviceMemoryGB <= 3) || (cpuCores > 0 && cpuCores <= 4);
+const lowEndDevice = (deviceMemoryGB > 0 && deviceMemoryGB <= 3) ||
+  (cpuCores > 0 && cpuCores <= 4 && (!deviceMemoryGB || deviceMemoryGB <= 4));
 const highEndDevice = !lowEndDevice && (deviceMemoryGB >= 6 || cpuCores >= 8);
 const QUALITY_LEVELS = [
   { name: 'low', maxPixelRatio: 1.00, targetFps: 30, antialias: false, powerPreference: 'low-power' },
-  { name: 'balanced', maxPixelRatio: 1.35, targetFps: 30, antialias: false, powerPreference: 'low-power' },
+  { name: 'balanced', maxPixelRatio: 1.50, targetFps: 60, antialias: false, powerPreference: 'low-power' },
   { name: 'high', maxPixelRatio: 2.00, targetFps: 60, antialias: true, powerPreference: 'high-performance' }
 ];
 let qualityLevel = lowEndDevice ? 0 : (highEndDevice ? 2 : 1);
@@ -141,7 +142,7 @@ function tick() {
 
     (root / "CHANGELOG-4.3.3.md").write_text(
         "# WAPFire Mobile 4.3.3 — Adaptive VRM performance\n\n"
-        "- Low-end phones: 30 FPS, reduced pixel ratio and no MSAA; capable phones retain 60 FPS and the original high-resolution renderer.\n"
+        "- Low-end phones: 30 FPS, reduced pixel ratio and no MSAA; midrange phones retain 60 FPS at a moderate resolution; capable phones retain the original high-resolution renderer.\n"
         "- Runtime frame-budget monitor steps down one tier if frame delivery remains poor.\n"
         "- 90/120/144 Hz screens do not render extra frames above the device profile.\n"
         "- Pose, spring-bone, mixer and WebGL work pauses while the WebView is hidden.\n"
@@ -152,7 +153,7 @@ function tick() {
         "WAPFire 4.3.3 VRM performance patch\n"
         "====================================\n"
         "[x] Hardware-aware low/balanced/high renderer profiles\n"
-        "[x] 30 FPS cap for low/balanced profiles; high profile remains 60 FPS\n"
+        "[x] 30 FPS cap for low profile; balanced/high profiles remain 60 FPS\n"
         "[x] Reduced pixel ratio and antialiasing on lower profiles\n"
         "[x] Adaptive frame-budget downgrade and hidden-WebView pause\n"
         "[x] Original VRM/VRMA files are not modified\n"
